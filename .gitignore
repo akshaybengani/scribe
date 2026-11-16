@@ -1,0 +1,33 @@
+# Research scratch space: models, venvs, clips, transcripts, comparison output
+.work/
+review/
+
+# Comparison scripts that read private recordings and reference transcripts
+setup/build_review.py
+setup/compare.py
+setup/score.py
+setup/score_skel.py
+setup/review_template.html
+setup/simple_template.html
+
+# Never commit audio, models, keys, or build output
+*.m4a
+*.mp3
+*.mp4
+*.wav
+*.aac
+*.flac
+*.ogg
+*.caf
+*.aiff
+*.bin
+*.gguf
+*.safetensors
+*.pt
+*.env
+.env*
+*.key
+*.pem
+*.p12
+Scribe.app/
+.DS_Store
