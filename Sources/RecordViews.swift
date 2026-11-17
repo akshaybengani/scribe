@@ -217,7 +217,7 @@ struct CallLanguageField: View {
     var disabled = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionLabel("Call language")
+            SectionLabel("Call language, you can change it after")
             GSegmented(options: CallLanguage.allCases, selection: $settings.callLanguage, title: { $0.title },
                        label: "Call language")
                 .disabled(disabled)
@@ -522,9 +522,10 @@ struct RecordView: View {
                 let rec = store.create(id: p.id, title: title, audioFile: p.url.lastPathComponent, duration: duration,
                                        language: settings.callLanguage, folderID: ui.folder)
                 let kind = settings.primary
+                // Do not transcribe yet: during a call people often do not know which language is being
+                // used, so the next screen asks, and transcription starts only when they confirm.
                 ui.justSaved = SavedRecording(id: rec.id, provider: kind,
                                               sources: withSystem ? "Microphone and computer audio" : "Microphone")
-                jobs.start(rec, kind: kind)
             }
         } else {
             ui.justSaved = nil
@@ -561,7 +562,7 @@ struct SavedRecordingView: View {
             PageHeader(title: "Recording stopped", badge: AnyView(StatusPill(kind: .ready, text: "Saved"))) { EmptyView() }
             HStack(alignment: .top, spacing: 16) {
                 summary(rec).frame(width: 352)
-                steps(rec).frame(maxWidth: .infinity)
+                if isChoosing(rec) { chooseLanguage(rec).frame(maxWidth: .infinity) } else { steps(rec).frame(maxWidth: .infinity) }
             }
             .frame(maxHeight: .infinity)
         }
@@ -604,6 +605,68 @@ struct SavedRecordingView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .overlay(alignment: .bottom) { if !last { Rectangle().fill(G.border).frame(height: 1) } }
+    }
+
+    /// True until a transcription for this recording has started, finished or failed.
+    private func isChoosing(_ rec: Recording?) -> Bool {
+        let hasResult = rec?.results.contains { $0.provider == saved.provider } ?? false
+        return !hasResult && !jobs.isRunning(saved.id, saved.provider)
+            && jobs.progress(saved.id, saved.provider) == nil && jobs.error(saved.id, saved.provider) == nil
+    }
+
+    private func languageBinding(_ rec: Recording?) -> Binding<CallLanguage> {
+        Binding(get: { rec?.callLanguage ?? settings.callLanguage }, set: { store.setLanguage(saved.id, $0) })
+    }
+
+    private func chooseLanguage(_ rec: Recording?) -> some View {
+        let lang = rec?.callLanguage ?? settings.callLanguage
+        let kind = saved.provider
+        return VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Which language was this call?").font(GFont.ui(18, .semibold)).tracking(-0.2)
+                Text("Transcription has not started. Listen if you are unsure, then pick the language so the right model is used.")
+                    .font(GFont.ui(13)).foregroundStyle(G.text2).lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            GSegmented(options: CallLanguage.allCases, selection: languageBinding(rec), title: { $0.title },
+                       label: "Call language")
+                .frame(maxWidth: 360)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(lang == .english
+                     ? "English only. Uses the English model, which is faster and more accurate when nobody speaks Hindi."
+                     : "Hindi and English in the same call. Uses the Hindi plus English model.")
+                    .font(GFont.ui(13)).foregroundStyle(G.text2).lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    GIcon(kind.isCloud ? "cloud" : "cpu", size: 12)
+                    Text(settings.name(kind, language: lang)).font(GFont.mono(12))
+                }
+                .foregroundStyle(G.text3)
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 10) {
+                Button { startTranscription(rec, kind) } label: { IconLabel("Start transcription", "waveform") }
+                    .buttonStyle(.g(.primary, height: 40)).keyboardShortcut(.defaultAction)
+                Button { ui.justSaved = nil; ui.open(recording: saved.id, folder: rec?.folderID) } label: {
+                    IconLabel("Not now, open in Library", "folder")
+                }
+                .buttonStyle(.g(.secondary, height: 40))
+            }
+            Text("You can transcribe later from the Library, and pick the language again there.")
+                .font(GFont.ui(12)).foregroundStyle(G.text3)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .card(padding: 0)
+    }
+
+    private func startTranscription(_ rec: Recording?, _ kind: ProviderKind) {
+        guard let rec = store.recordings.first(where: { $0.id == saved.id }) ?? rec else { return }
+        if settings.issue(for: kind, language: rec.callLanguage) == nil, kind.isCloud {
+            ui.modal = .confirmCloud(rec, kind)        // the confirmation starts the job
+        } else {
+            jobs.start(rec, kind: kind)                // also records a "not ready" message as an error
+        }
     }
 
     private func steps(_ rec: Recording?) -> some View {

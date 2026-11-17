@@ -158,6 +158,13 @@ final class RecordingStore: ObservableObject {
         return r
     }
 
+    /// The call language is chosen after recording, so it can change until the first transcription starts.
+    func setLanguage(_ id: String, _ language: CallLanguage) {
+        guard let i = recordings.firstIndex(where: { $0.id == id }), recordings[i].language != language else { return }
+        recordings[i].language = language
+        save(recordings[i])
+    }
+
     /// Copies a user-chosen audio file into the library.
     func importAudio(from url: URL, language: CallLanguage = .mixed, folderID: String? = nil) throws -> Recording {
         let id = UUID().uuidString

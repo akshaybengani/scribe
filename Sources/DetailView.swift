@@ -413,7 +413,12 @@ struct DetailView: View {
                 } else {
                     VStack(spacing: 14) {
                         Text("No transcript yet.").font(GFont.ui(14)).foregroundStyle(G.text2)
-                        Button("Transcribe with \(settings.name(settings.primary, language: recording.callLanguage))") { start(settings.primary) }
+                        Text("Call language").font(GFont.ui(12)).foregroundStyle(G.text3)
+                        GSegmented(options: CallLanguage.allCases,
+                                   selection: Binding(get: { current.callLanguage }, set: { store.setLanguage(recording.id, $0) }),
+                                   title: { $0.title }, label: "Call language")
+                            .frame(maxWidth: 360)
+                        Button("Transcribe with \(settings.name(settings.primary, language: current.callLanguage))") { start(settings.primary) }
                             .buttonStyle(.g(.primary, height: 40))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -470,12 +475,12 @@ struct DetailView: View {
     }
 
     private func start(_ k: ProviderKind) {
-        if settings.issue(for: k, language: recording.callLanguage) != nil {
-            jobs.start(recording, kind: k)      // records the "not ready" message as an error row
+        if settings.issue(for: k, language: current.callLanguage) != nil {
+            jobs.start(current, kind: k)      // records the "not ready" message as an error row
             return
         }
         chosen = k
-        if k.isCloud { ui.modal = .confirmCloud(current, k) } else { jobs.start(recording, kind: k) }
+        if k.isCloud { ui.modal = .confirmCloud(current, k) } else { jobs.start(current, kind: k) }
     }
 
     private func copy(_ text: String) {

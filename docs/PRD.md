@@ -160,7 +160,7 @@ Of its 181 SRS requirements, 15 are verified, 147 are built but untested, and 19
 
 ### 7.1 Capture
 
-**Record.** One large button starts and stops. Microphone and, if you tick it, computer audio each get a waveform lane. A timer counts written audio. Stopping saves, opens the recording, and starts transcription with the engine you chose.
+**Record.** One large button starts and stops. Microphone and, if you tick it, computer audio each get a waveform lane. A timer counts written audio. Stopping saves the recording and then asks which language the call was in, Hindi and English or English only, because people often do not know during the call. Transcription starts only when you confirm. You can also leave it for later and pick the language again from the Library.
 
 **Computer audio.** ScreenCaptureKit captures what the Mac plays and mixes it into the same file as the microphone. Headphones are advised so the microphone doesn't hear the speakers a second time. Scribe excludes its own playback. If computer audio can't start, the recording continues with the microphone only and says so.
 
