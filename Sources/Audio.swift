@@ -82,20 +82,93 @@ final class PauseFlag: @unchecked Sendable {
     var paused = false
 }
 
+/// Mixes the microphone and computer audio into one 16 kHz mono file.
+///
+/// The microphone buffers come straight from a tap on the engine's input node, which is the only
+/// graph that reliably delivers audio (routing the input through a mixer node returned digital
+/// silence on macOS 26 and 27). The microphone is the clock: for every microphone chunk, the same
+/// number of computer audio samples is taken from a small queue and added. A gap in computer audio
+/// simply adds silence, and a gap in the microphone never stalls the file.
+final class MonoMixer: @unchecked Sendable {
+    private let writer: AACWriter
+    private let lock = NSLock()
+    private var system: [Float] = []
+    private let maxQueued = 16_000 * 2                 // never let computer audio lag the mic by more than 2 s
+    private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+    private var micConv: AVAudioConverter?
+    private var micIn: AVAudioFormat?
+    private var sysConv: AVAudioConverter?
+    private var sysIn: AVAudioFormat?
+
+    init(writer: AACWriter) { self.writer = writer }
+
+    func pushMic(_ buf: AVAudioPCMBuffer) {
+        guard let samples = Self.mono16k(buf, to: target, conv: &micConv, last: &micIn), !samples.isEmpty else { return }
+        var out = samples
+        lock.lock()
+        let n = min(out.count, system.count)
+        if n > 0 {
+            for i in 0..<n { out[i] += system[i] }
+            system.removeFirst(n)
+        }
+        lock.unlock()
+        write(out)
+    }
+
+    func pushSystem(_ buf: AVAudioPCMBuffer) {
+        guard let samples = Self.mono16k(buf, to: target, conv: &sysConv, last: &sysIn), !samples.isEmpty else { return }
+        lock.lock()
+        system.append(contentsOf: samples)
+        if system.count > maxQueued { system.removeFirst(system.count - maxQueued) }
+        lock.unlock()
+    }
+
+    private func write(_ samples: [Float]) {
+        guard let buf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: AVAudioFrameCount(samples.count)),
+              let dst = buf.floatChannelData?[0] else { return }
+        for i in 0..<samples.count { dst[i] = max(-1, min(1, samples[i])) }
+        buf.frameLength = AVAudioFrameCount(samples.count)
+        writer.write(buf)
+    }
+
+    /// Converts any buffer to 16 kHz mono float samples. Each source keeps its own converter.
+    private static func mono16k(_ buf: AVAudioPCMBuffer, to target: AVAudioFormat,
+                                conv: inout AVAudioConverter?, last: inout AVAudioFormat?) -> [Float]? {
+        guard buf.frameLength > 0 else { return nil }
+        if conv == nil || last != buf.format {
+            conv = AVAudioConverter(from: buf.format, to: target)
+            last = buf.format
+        }
+        guard let c = conv else { return nil }
+        let capacity = AVAudioFrameCount(Double(buf.frameLength) * target.sampleRate / buf.format.sampleRate) + 1024
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+        var consumed = false
+        var error: NSError?
+        c.convert(to: out, error: &error) { _, status in
+            if consumed { status.pointee = .noDataNow; return nil }
+            consumed = true
+            status.pointee = .haveData
+            return buf
+        }
+        guard out.frameLength > 0, let data = out.floatChannelData else { return nil }
+        return Array(UnsafeBufferPointer(start: data[0], count: Int(out.frameLength)))
+    }
+}
+
 // MARK: - System audio (Teams, Meet, browser calls) via ScreenCaptureKit
 
 final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     static let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
 
     private var stream: SCStream?
-    private let player: AVAudioPlayerNode
+    private let onBuffer: @Sendable (AVAudioPCMBuffer) -> Void
     private let state: PauseFlag
     private let queue = DispatchQueue(label: "scribe.system-audio")
     private var converter: AVAudioConverter?
     var onStop: (@Sendable (String) -> Void)?
 
-    init(player: AVAudioPlayerNode, state: PauseFlag) {
-        self.player = player
+    init(state: PauseFlag, onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
+        self.onBuffer = onBuffer
         self.state = state
     }
 
@@ -125,7 +198,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, sampleBuffer.isValid, !state.paused, let buf = pcm(from: sampleBuffer) else { return }
-        player.scheduleBuffer(buf, completionHandler: nil)
+        onBuffer(buf)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -176,8 +249,8 @@ final class Recorder: NSObject, ObservableObject {
     @Published var errorMessage: String?
 
     private let engine = AVAudioEngine()
-    private var mixer: AVAudioMixerNode?
-    private var player: AVAudioPlayerNode?
+    private var mixer: MonoMixer?
+    private var heardMic = false
     private var writer: AACWriter?
     private var capture: SystemAudioCapture?
     private var timer: Timer?
@@ -208,8 +281,9 @@ final class Recorder: NSObject, ObservableObject {
             let w = try AACWriter(url: url)
             writer = w
 
-            let mix = AVAudioMixerNode()
-            engine.attach(mix)
+            let mix = MonoMixer(writer: w)
+            mixer = mix
+            heardMic = false
             let input = engine.inputNode
             let inFormat = input.outputFormat(forBus: 0)
             guard inFormat.sampleRate > 0 else {
@@ -217,33 +291,22 @@ final class Recorder: NSObject, ObservableObject {
                 cleanup()
                 return false
             }
-            engine.connect(input, to: mix, format: inFormat)
-            // The mixer must reach the output for the engine to run it; silence the output so the
-            // microphone is never played back through the speakers.
-            engine.connect(mix, to: engine.mainMixerNode, format: nil)
-            engine.mainMixerNode.outputVolume = 0
 
+            // A plain tap on the input node. Do not connect the input to a mixer: that graph delivers
+            // digital silence. The engine has no output, so nothing is ever played back.
             let flag = self.flag, micMeter = self.micMeter, sysMeter = self.sysMeter
-            mix.installTap(onBus: 0, bufferSize: 4096, format: nil) { buf, _ in
-                if !flag.paused { w.write(buf) }
+            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buf, _ in
+                micMeter.update(buf)
+                if !flag.paused { mix.pushMic(buf) }
             }
-            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buf, _ in micMeter.update(buf) }
-            mixer = mix
-
-            if withSystemAudio {
-                let p = AVAudioPlayerNode()
-                engine.attach(p)
-                engine.connect(p, to: mix, format: SystemAudioCapture.format)
-                p.installTap(onBus: 0, bufferSize: 2048, format: SystemAudioCapture.format) { buf, _ in sysMeter.update(buf) }
-                player = p
-            }
-
             engine.prepare()
             try engine.start()
 
-            if withSystemAudio, let p = player {
-                p.play()
-                let cap = SystemAudioCapture(player: p, state: flag)
+            if withSystemAudio {
+                let cap = SystemAudioCapture(state: flag) { buf in
+                    sysMeter.update(buf)
+                    mix.pushSystem(buf)
+                }
                 cap.onStop = { [weak self] message in
                     Task { @MainActor in self?.errorMessage = "Computer audio capture stopped: \(message)" }
                 }
@@ -273,7 +336,13 @@ final class Recorder: NSObject, ObservableObject {
 
     private func tick() {
         guard isRecording, !isPaused else { return }
-        micLevels.append(micMeter.take())
+        let level = micMeter.take()
+        if level > 0.001 { heardMic = true }
+        // Exactly zero for the first seconds means the system is handing us silence, not a quiet room.
+        if !heardMic, elapsed > 4, errorMessage == nil {
+            errorMessage = "The microphone is delivering silence. Check System Settings, Privacy and Security, Microphone, that Scribe is switched on and that the right input device is chosen in Sound settings."
+        }
+        micLevels.append(level)
         if micLevels.count > maxLevels { micLevels.removeFirst(micLevels.count - maxLevels) }
         if hasSystemAudio {
             systemLevels.append(sysMeter.take())
@@ -303,15 +372,9 @@ final class Recorder: NSObject, ObservableObject {
     }
 
     private func cleanup() {
-        mixer?.removeTap(onBus: 0)
         engine.inputNode.removeTap(onBus: 0)
-        player?.removeTap(onBus: 0)
-        player?.stop()
         if engine.isRunning { engine.stop() }
-        if let m = mixer { engine.detach(m) }
-        if let p = player { engine.detach(p) }
         mixer = nil
-        player = nil
         writer?.finish()
         writer = nil
         hasSystemAudio = false
