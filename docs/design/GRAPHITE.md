@@ -1,8 +1,8 @@
 # Scribe Graphite design spec
 
 Source look: direction A, "Graphite console", drawn on a Claude Design canvas. This file turns that look
-into tokens and rules so several canvases built in parallel stay identical. Dark is the default theme. Light is the
-same layout with the light tokens.
+into tokens and rules so several canvases built in parallel stay identical. The app follows the system light or dark setting, with no
+forced appearance. Both themes share one layout and differ only in the tokens. On the design canvases, dark is the default board.
 
 ## Tokens (use as CSS custom properties, never raw hex inside screens)
 
@@ -41,7 +41,7 @@ gray `#8A929E` / `#5F6875`. Expose them as `--f-red` ... `--f-gray`.
 
 ## Type, shape, spacing
 
-- Fonts: Inter 400/500/600/700 for UI; JetBrains Mono 400/500 for timers, shortcuts, paths, counts. Load both with one Google Fonts link in `<helmet>`.
+- Fonts: Inter 400/500/600/700 for UI; JetBrains Mono 400/500 for timers, shortcuts, paths, counts. Load both with one Google Fonts link in `<helmet>`. In the app, Inter and JetBrains Mono are bundled under the SIL Open Font License. That isn't built yet, so the app uses the system fonts and picks up the two families only when they're installed.
 - Timer 68px mono 500, letter-spacing -0.03em. Page title 20px 600, letter-spacing -0.02em. Section label 12px 600 uppercase, letter-spacing 0.06em, `--text-3`. Body 14px. Captions 12 to 13px.
 - Radii: 8 buttons and inputs, 10 inner panels and radio cards, 14 cards, 999 pills. Modals 16. Spacing on a 4px grid. Cards have 20px padding.
 - Icons: inline stroke SVG on a 24 grid, stroke 2, round caps and joins, `aria-hidden="true"`. No emoji. Never rely on colour alone: pair status colour with an icon or label.
@@ -50,7 +50,7 @@ gray `#8A929E` / `#5F6875`. Expose them as `--f-red` ... `--f-gray`.
 
 ## Components (reuse the markup from the A canvas)
 
-Sidebar (logo, search with a Ctrl K hint, nav, folder tree, status card), segmented control, radio card, checkbox row,
+Sidebar (logo, nav, folder tree, status card), search bar (see below), segmented control, radio card, checkbox row,
 waveform lane, secondary button (`btn2`), primary button (accent fill, `--on-accent` text), danger button
 (`--danger` outline), status pill, warning banner, modal, popover menu, toast (bottom centre, `--surface-2`), tab row
 for transcripts, player bar, tree row (16px indent per level, swatch, name, mono count), breadcrumb.
@@ -71,3 +71,15 @@ Every screen is two boards from one source:
 ## Content rules
 
 Generic sample content only: no real meeting text, no real people or company names (use "Platform team", "Design team sessions", "Client calls", "Avery", "Sam"). Folder names to reuse: Daily standups (sub-folders Platform team, Mobile team), Design team sessions, Client calls, Personal notes. Mixed Hindi and English sample lines are fine when written in Roman script ("Aaj ka update, the build is green"). No lorem ipsum, no invented statistics.
+
+## Search bar
+
+Global search is a bar at the top centre of the window, shaped like a browser address field: 8px radius, 1px `--border-strong`, `--surface-2` fill, a search icon, the placeholder "Search recordings", and a mono `Cmd K` hint at the right. Cmd+K focuses it. Results drop below it with the title, folder path, a one-line snippet with the matches in bold, and the tabs that match. The bar is built in the app and hasn't been exercised yet.
+
+## Progress for long jobs
+
+A running job shows a bar with the percent, the elapsed time, the estimated time remaining, "Part x of y" for a chunked job, and the stage name (Preparing audio, Transcribing, Uploading, Waiting for provider, Merging parts). An upload shows bytes sent of bytes total. While a single request waits on the provider, the bar sweeps and shows no percentage. The recording screen reads these numbers in the app, and it hasn't been exercised on a real job yet.
+
+## Logo
+
+The Caret wave: four grey sound bars ending in a lime text cursor, on a graphite tile. It's the app icon and appears in the app. The source is `assets/branding/icon.svg`.

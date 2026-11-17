@@ -65,9 +65,27 @@ struct Config: Sendable {
     }
 }
 
+/// What the settings screen shows for one provider's fetched model list.
+struct ModelCatalogState: Equatable {
+    /// Result of the provider's list-models call (last good one; kept when a refresh fails).
+    var fetched: [ModelInfo] = []
+    var isLoading = false
+    /// Plain-language reason the last refresh failed, nil when it worked or has not run.
+    var error: String? = nil
+    var lastRefreshed: Date? = nil
+}
+
+private struct ModelCache: Codable {
+    var models: [ModelInfo]
+    var fetchedAt: Date
+}
+
 @MainActor
 final class AppSettings: ObservableObject {
     private let d: UserDefaults
+    private let session: URLSession
+    private var refreshGeneration: [ProviderKind: Int] = [:]
+    private var debounce: [ProviderKind: Task<Void, Never>] = [:]
 
     static let defaultTemplate = """
     Below is a machine-generated transcript of a conversation that mixes Hindi and English. \
@@ -94,9 +112,13 @@ final class AppSettings: ObservableObject {
     @Published var elevenModel: String { didSet { d.set(elevenModel, forKey: "elevenModel") } }
     @Published var claudeModel: String { didSet { d.set(claudeModel, forKey: "claudeModel") } }
 
-    @Published var geminiKey: String { didSet { Keychain.set(geminiKey, account: "gemini") } }
-    @Published var elevenKey: String { didSet { Keychain.set(elevenKey, account: "elevenlabs") } }
-    @Published var claudeKey: String { didSet { Keychain.set(claudeKey, account: "claude") } }
+    @Published var geminiKey: String { didSet { Keychain.set(geminiKey, account: "gemini"); keyChanged(.gemini) } }
+    @Published var elevenKey: String { didSet { Keychain.set(elevenKey, account: "elevenlabs"); keyChanged(.elevenlabs) } }
+    @Published var claudeKey: String { didSet { Keychain.set(claudeKey, account: "claude"); keyChanged(.claude) } }
+
+    /// Fetched model lists per cloud provider, with loading and error state. Read through
+    /// `catalog(_:)` and `modelOptions(_:)`; `.local` never has an entry.
+    @Published private(set) var catalogs: [ProviderKind: ModelCatalogState] = [:]
 
     var style: OutputStyle {
         get { OutputStyle(rawValue: styleRaw) ?? .roman }
@@ -108,8 +130,38 @@ final class AppSettings: ObservableObject {
             .appendingPathComponent("Scribe/Models", isDirectory: true)
     }
 
-    init(defaults: UserDefaults = .standard) {
+    /// One-time message after stored model names were moved to the new defaults; nil once dismissed.
+    @Published private(set) var modelMigrationNote: String?
+
+    /// Stored values equal to an old default are moved to the new default, once. Storage only gets a model
+    /// name when the user edits the field, so an old-default value was typed or picked; there is no way to
+    /// tell, so the change is announced in `modelMigrationNote` instead of being silent.
+    static func migrateModelDefaults(_ d: UserDefaults) {
+        let flag = "modelDefaults.migrated.2026-11-17"
+        guard !d.bool(forKey: flag) else { return }
+        d.set(true, forKey: flag)
+        var moved: [String] = []
+        for (kind, field) in [(ProviderKind.gemini, "geminiModel"), (.elevenlabs, "elevenModel")] {
+            guard let old = ModelCatalog.retiredDefaults[kind], d.string(forKey: field) == old else { continue }
+            let new = ModelCatalog.defaultModel(kind)
+            d.set(new, forKey: field)
+            moved.append("\(kind.short): \(old) to \(new)")
+        }
+        if !moved.isEmpty {
+            d.set("Model names were updated to the current defaults (" + moved.joined(separator: "; ")
+                  + "). You can change them in AI Models.", forKey: "modelMigrationNote")
+        }
+    }
+
+    func dismissModelMigrationNote() {
+        d.removeObject(forKey: "modelMigrationNote")
+        modelMigrationNote = nil
+    }
+
+    init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
         d = defaults
+        self.session = session
+        Self.migrateModelDefaults(defaults)
         primary = ProviderKind(rawValue: d.string(forKey: "primary") ?? "") ?? .local
         captureSystemAudio = d.bool(forKey: "captureSystemAudio")
         let detected = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
@@ -117,22 +169,151 @@ final class AppSettings: ObservableObject {
         whisperPath = d.string(forKey: "whisperPath") ?? detected
         localModelPath = d.string(forKey: "localModelPath")
             ?? Self.modelsFolder.appendingPathComponent("ggml-oriserve-f16.bin").path
-        // English-only calls default to the full Whisper large-v3, which is already strong at English.
-        // Swap in an English-specific model (for example a .en or distil build) in AI Models.
+        // English-only calls default to Whisper large-v3-turbo (q5_0), the pick from the English bake-off.
+        // Only used when no path has been saved.
         englishModelPath = d.string(forKey: "englishModelPath")
-            ?? Self.modelsFolder.appendingPathComponent("ggml-large-v3-f16.bin").path
+            ?? Self.modelsFolder.appendingPathComponent("ggml-large-v3-turbo-q5_0.bin").path
         callLanguage = CallLanguage(rawValue: d.string(forKey: "callLanguage") ?? "") ?? .mixed
         language = d.string(forKey: "language") ?? "en"
         hint = d.string(forKey: "hint") ?? ""
         styleRaw = d.string(forKey: "style") ?? OutputStyle.roman.rawValue
         template = d.string(forKey: "template") ?? Self.defaultTemplate
-        // Defaults are real, working model names; change them to whichever you use.
-        geminiModel = d.string(forKey: "geminiModel") ?? "gemini-2.5-flash"
-        elevenModel = d.string(forKey: "elevenModel") ?? "scribe_v1"
-        claudeModel = d.string(forKey: "claudeModel") ?? "claude-sonnet-5-5"
+        // Defaults are current model names (see ModelCatalog); a saved value always wins.
+        geminiModel = d.string(forKey: "geminiModel") ?? ModelCatalog.defaultModel(.gemini)
+        elevenModel = d.string(forKey: "elevenModel") ?? ModelCatalog.defaultModel(.elevenlabs)
+        claudeModel = d.string(forKey: "claudeModel") ?? ModelCatalog.defaultModel(.claude)
         geminiKey = Keychain.get("gemini")
         elevenKey = Keychain.get("elevenlabs")
         claudeKey = Keychain.get("claude")
+        modelMigrationNote = d.string(forKey: "modelMigrationNote")
+        for k in Self.cloudKinds { if let c = loadCache(k) { catalogs[k] = ModelCatalogState(fetched: c.models, lastRefreshed: c.fetchedAt) } }
+    }
+
+    // MARK: - Model catalogs
+
+    static let cloudKinds: [ProviderKind] = [.gemini, .elevenlabs, .claude]
+    /// A cached list older than this is refreshed by `refreshStaleModels()`.
+    nonisolated static let modelCacheMaxAge: TimeInterval = 24 * 3600
+
+    func catalog(_ k: ProviderKind) -> ModelCatalogState { catalogs[k] ?? ModelCatalogState() }
+
+    func apiKey(_ k: ProviderKind) -> String {
+        switch k {
+        case .gemini: return geminiKey
+        case .elevenlabs: return elevenKey
+        case .claude: return claudeKey
+        case .local: return ""
+        }
+    }
+
+    func selectedModel(_ k: ProviderKind) -> String {
+        switch k {
+        case .gemini: return geminiModel
+        case .elevenlabs: return elevenModel
+        case .claude: return claudeModel
+        case .local: return ""
+        }
+    }
+
+    func setModel(_ k: ProviderKind, _ id: String) {
+        switch k {
+        case .gemini: geminiModel = id
+        case .elevenlabs: elevenModel = id
+        case .claude: claudeModel = id
+        case .local: break
+        }
+    }
+
+    /// Curated plus fetched models, de-duplicated, audio-capable first then newest first. The model
+    /// currently typed into the field is included even when no list knows it, so free-text names
+    /// keep working and stay visible in a picker.
+    func modelOptions(_ k: ProviderKind) -> [ModelInfo] {
+        guard k != .local else { return [] }
+        var list = ModelCatalog.merge(curated: ModelCatalog.curated(k), fetched: catalog(k).fetched)
+        let current = selectedModel(k).trimmingCharacters(in: .whitespaces)
+        if !current.isEmpty, !list.contains(where: { $0.id == current }) {
+            list.insert(ModelCatalog.custom(k, id: current), at: 0)
+        }
+        return list
+    }
+
+    /// Only the audio-capable options, for a "transcription model" picker.
+    func audioModelOptions(_ k: ProviderKind) -> [ModelInfo] { modelOptions(k).filter(\.supportsAudio) }
+
+    /// A warning when the chosen Gemini or ElevenLabs model is known not to take audio; nil otherwise.
+    /// Claude is a text reviewer, so it never warns.
+    func modelWarning(_ k: ProviderKind) -> String? {
+        guard k == .gemini || k == .elevenlabs else { return nil }
+        let id = selectedModel(k).trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty, let m = modelOptions(k).first(where: { $0.id == id }), !m.supportsAudio else { return nil }
+        return "\(id) does not look like an audio transcription model. \(m.note)"
+    }
+
+    /// Calls the provider's list-models API and updates `catalogs[k]`. A failure keeps the previous list
+    /// and sets `error`. A newer refresh for the same provider supersedes an older one still in flight.
+    /// `key` overrides the stored key (used by tests, and to try a key before it is saved).
+    func refreshModels(_ k: ProviderKind, key override: String? = nil) async {
+        guard k != .local else { return }
+        let key = (override ?? apiKey(k)).trimmingCharacters(in: .whitespacesAndNewlines)
+        var state = catalog(k)
+        guard !key.isEmpty else {
+            refreshGeneration[k, default: 0] += 1
+            state.isLoading = false
+            state.error = nil
+            catalogs[k] = state
+            return
+        }
+        let gen = (refreshGeneration[k] ?? 0) + 1
+        refreshGeneration[k] = gen
+        state.isLoading = true
+        state.error = nil
+        catalogs[k] = state
+        do {
+            let list = try await ModelCatalog.fetch(kind: k, key: key, session: session)
+            guard refreshGeneration[k] == gen else { return }
+            let now = Date()
+            catalogs[k] = ModelCatalogState(fetched: list, isLoading: false, error: nil, lastRefreshed: now)
+            saveCache(k, ModelCache(models: list, fetchedAt: now))
+        } catch {
+            guard refreshGeneration[k] == gen else { return }
+            var s = catalog(k)
+            s.isLoading = false
+            // A cancelled task (view went away) is not a failure worth showing.
+            s.error = (error is CancellationError || (error as? URLError)?.code == .cancelled) ? nil
+                : (error.localizedDescription)
+            catalogs[k] = s
+        }
+    }
+
+    /// Refreshes every cloud provider that has a key and no list, or a list older than `maxAge`.
+    func refreshStaleModels(maxAge: TimeInterval = AppSettings.modelCacheMaxAge) async {
+        for k in Self.cloudKinds {
+            guard !apiKey(k).trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            if let t = catalog(k).lastRefreshed, Date().timeIntervalSince(t) < maxAge { continue }
+            await refreshModels(k)
+        }
+    }
+
+    /// Called when a key field changes. Waits for typing to pause, then refreshes (or clears the error
+    /// when the key was emptied). Replaces any pending refresh for that provider.
+    func keyChanged(_ k: ProviderKind, delay: Duration = .milliseconds(900)) {
+        debounce[k]?.cancel()
+        debounce[k] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            await self.refreshModels(k)
+        }
+    }
+
+    private func cacheKey(_ k: ProviderKind) -> String { "modelCache.\(k.rawValue)" }
+
+    private func saveCache(_ k: ProviderKind, _ c: ModelCache) {
+        if let data = try? JSONEncoder().encode(c) { d.set(data, forKey: cacheKey(k)) }
+    }
+
+    private func loadCache(_ k: ProviderKind) -> ModelCache? {
+        guard let data = d.data(forKey: cacheKey(k)) else { return nil }
+        return try? JSONDecoder().decode(ModelCache.self, from: data)
     }
 
     func config() -> Config {

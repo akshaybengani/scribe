@@ -53,7 +53,7 @@ One 5 minute Hindi and English clip, scored against a human-corrected reference 
 | Gemini | 11.0% | Cloud. The reference was corrected from Gemini's text, so this score is flattered. |
 | ElevenLabs Scribe | 16.1% | Cloud |
 | Oriserve Whisper-Hindi2Hinglish | 22.9% | Local, the default for Hinglish |
-| Whisper large-v3, full precision | 27.9% | Local, the default for English-only calls |
+| Whisper large-v3, full precision | 27.9% | Local. English-only calls default to large-v3-turbo at 5-bit instead. |
 | Qwen3-ASR | 32.2% | Local, not used |
 | Shunya | 52% or worse | Local, not used |
 | Whisper large-v3-turbo with voice activity detection | Failed or didn't load | Not used |
@@ -65,15 +65,16 @@ Read it with the limits in view: one clip, one meeting, one reference. The local
 
 Each claim below is something you can check without trusting me.
 
-- **The local engine opens no connection.** The only code that talks to the network is the three cloud transcribers and the Claude reviewer in [`Sources/Providers.swift`](Sources/Providers.swift). Check with `grep -n URLSession Sources/*.swift`.
+- **The local engine opens no connection.** Network code sits in four files: the cloud transcribers and the Claude reviewer in [`Sources/Providers.swift`](Sources/Providers.swift), the upload helper they share in `Sources/Progress.swift`, and the model-list requests in `Sources/ModelCatalog.swift` (with `Sources/Settings.swift` holding the session). `LocalTranscriber` has none. Check with `grep -n URLSession Sources/*.swift`.
 - **No analytics, no accounts, no backend.** [`build.sh`](build.sh) compiles `Sources/*.swift` against system frameworks only. There are no third-party packages.
 - **The app declares one usage string, the microphone.** Computer audio asks for Screen & System Audio Recording at runtime, only when you tick it.
+- **Model lists need a key.** The only extra network calls are the providers' list-models requests, and they run only after you enter that provider's key, to that provider's own host.
 - **API keys live in the macOS Keychain**, service `com.akshaybengani.scribe`. Check with `security find-generic-password -s com.akshaybengani.scribe`. They're never written to preferences, `meta.json`, or exports.
 - **Audio and transcripts stay in** `~/Library/Application Support/Scribe/`.
 
 The caveats, in the same breath:
 
-- The app is ad-hoc signed and **not sandboxed**, so macOS doesn't enforce the no-network claim. The code does, and the grep above is how you confirm it.
+- The app is signed with a local certificate (or ad-hoc if you haven't made one) and is **not sandboxed**, so macOS doesn't enforce the no-network claim. The code does, and the grep above is how you confirm it.
 - When you pick Gemini or ElevenLabs, your audio goes to Google or ElevenLabs. When you ask Claude to review, the transcript text (not audio) goes to Anthropic. A banner stays on screen while a cloud engine is chosen or running, and the detail screen asks before each send.
 - **One gap in that promise:** if a cloud engine is your default, the automatic send after a recording or import shows the banner but doesn't ask first. The confirmation is built on the detail screen only. It's tracked as KG-01 in the [SRS](docs/SRS.md).
 - The setup scripts in `setup/` use the network to install Homebrew packages and download models. The app never runs them.
@@ -84,32 +85,41 @@ What the privacy costs:
 |---|---|---|
 | Local by default | About 11.9 points more error than the best cloud model on the one clip measured | Second opinions as tabs, and a names-and-terms field for recurring spellings |
 | Full-precision models, beam search | Slow: about 4 times real time | Time doesn't matter here, and the job runs in the background |
-| Models on disk | The two defaults are about 1.5 GB and 2.9 GB | Point Settings at a smaller file if you need to |
-| No speaker labels | Diarization is off and the cloud prompts ask for none | None yet |
+| Models on disk | The Hinglish default is about 1.5 GB | Point Settings at a smaller file if you need to |
+| No encryption, no backup | Audio and transcripts sit unencrypted on one Mac | Export copies everything out |
+| Speaker labels only from providers | Local returns none | ElevenLabs and Gemini 3.5 Transcribe return them |
 
 ## What it does
 
 - **Record** the microphone, optionally with computer audio (Teams, Meet, browser calls) through ScreenCaptureKit, mixed into one 16 kHz mono AAC file. Pause and resume.
 - **Import** any audio file. It's copied into the library and the original is left alone.
-- **Choose a call language** per recording: Hindi + English, or English only (a separate model file and prompt).
+- **Choose a call language** per recording: Hindi + English, or English only (a separate model file and prompt, large-v3-turbo at 5-bit by default).
 - **Transcribe** with Local (whisper.cpp), Gemini, or ElevenLabs Scribe. Claude reviews existing transcripts as text only.
+- **Long recordings:** Gemini and ElevenLabs get recordings over 60 minutes in parts of about 25 minutes (29 minutes for Gemini with speaker labels), cut at the quietest point and stitched in order. Failed parts retry. A job screen shows percent, elapsed, time left, and chunk x of y.
+- **Search** every title, folder, and transcript from the bar at the top (Cmd+K), then find within a transcript.
+- **Speaker labels** appear only when a provider returns them (ElevenLabs and Gemini 3.5 Transcribe). Nothing extra is added otherwise.
+- **Pick models from each provider's own list** once a key exists, audio models first. The names load from the provider's list-models API.
+- **Follow the system theme**: the Graphite design in light or dark, with Space to play and pause, Cmd+N, Cmd+Shift+N, Cmd+, , Cmd+E, and Cmd+K.
 - **Keep every opinion** as a tab, one per engine, and ask for more with "Get another opinion".
 - **Organise** recordings in nested, colour-coded folders (nine colours, any depth). Move by menu or drag and drop. Deleting a folder moves its contents up and never deletes audio.
-- **Hand off**: copy the transcript, copy it with an editable notes prompt for Claude, or export it as text. Export the audio too.
+- **Hand off**: copy the transcript, copy it with an editable notes prompt for Claude, or export it as text. The export dialog writes the audio, a text file per transcript, one combined Markdown file, and a metadata.json for each recording.
+- **Delete** asks first, and removes the audio and its transcripts together.
 
 ### What's built and what isn't
 
 | Area | State |
 |---|---|
-| Recording, import, local transcription, folders, settings, export | Built. The local pipeline is verified end to end. |
-| Gemini, ElevenLabs, and Claude requests | Built, never run: no API keys were present when the app was written |
-| Live microphone and computer audio capture, drag and drop, dark mode | Built, not yet exercised |
-| Chunking for very long recordings | Not built |
+| Recording, import, local transcription, folders, settings, export of one transcript | Built. The local pipeline was verified end to end before the latest changes. |
+| Graphite design, system light or dark, keyboard shortcuts, delete with confirmation | Built, not yet exercised |
+| Chunking for Gemini and ElevenLabs, retries, job progress numbers | Built, not yet exercised. No screen reads the progress numbers yet. |
+| Search bar (Cmd+K) and find bar, job progress screen, model picker with Refresh models, export dialog with metadata.json, bundled fonts | Built, not yet exercised. The export dialog isn't opened from a multi-selection yet, and the Settings sheet still has a text field for model names. |
+| Speaker labels | ElevenLabs and Gemini 3.5 Transcribe built, not yet exercised |
+| Gemini, ElevenLabs, and Claude requests | Built, never run: no API keys were present. The default Gemini model goes through the Interactions API, written from Google's docs and never sent. |
+| Live microphone and computer audio capture, drag and drop | Built, not yet exercised |
 | Confirmation before every cloud send | Not built (see the gap above) |
-| Compare-opinions view, command palette, search | Not built |
-| Graphite design system in the app | Not built. The app uses system styling. |
+| Local chunking, compare-opinions view, Windows | Not built |
 
-Of 135 requirements in the SRS, 20 are verified, 94 are built but untested, and 21 are planned.
+Of 181 requirements in the SRS, 15 are verified, 147 are built but untested, and 19 are planned.
 
 ## Where things live
 
@@ -131,17 +141,31 @@ Sources/
   Model.swift         Recording, Folder, TranscriptResult, RecordingStore
   Audio.swift         recorder, AAC writer, ScreenCaptureKit capture, player, waveform
   Providers.swift     whisper.cpp, Gemini, ElevenLabs, Claude, job runner
-  Settings.swift      settings, Keychain
-  SettingsView.swift  the AI Models sheet
-  Library.swift       folder tree, drag and drop
-  Views.swift         home, detail, transcript tabs, export
+  Chunker.swift       split long recordings at the quietest point
+  Progress.swift      job progress, whisper-cli progress parsing, speaker labels
+  ModelCatalog.swift  curated names and each provider's list-models API
+  Settings.swift      settings, Keychain, model catalogs
+  SettingsView.swift  the Settings sheet
+  Search.swift        global search index and query engine
+  SearchBar.swift     the search bar and results panel
+  Export.swift        export engine
+  ExportFlow.swift    the export dialog and the full export writer
+  Theme.swift         Graphite tokens and components, light and dark
+  Library.swift       sidebar and folder tree, drag and drop
+  RecordViews.swift   record and import screens
+  DetailView.swift    recording screen: player, tabs, opinions
+  TranscriptViews.swift  transcript blocks, find bar, job progress screen
+  ModelPickers.swift  model picker and Refresh models
+  Dialogs.swift       confirmations and dialogs
+  Views.swift         window shell and UI state
 setup/                model download and conversion, comparison runs
 docs/
   PRD.md              product requirements, decisions, risks
   SRS.md              software requirements, data model, traceability
-  design/GRAPHITE.md  the dark design system the UI will move to
-assets/branding/      icon
-build.sh              compile, bundle, ad-hoc sign, install
+  design/GRAPHITE.md  the Graphite design tokens, light and dark
+assets/branding/      the Caret wave logo, app icon
+assets/fonts/         Inter and JetBrains Mono (SIL OFL)
+build.sh              compile, bundle, sign, install
 ```
 
 ## Run it
@@ -163,23 +187,25 @@ brew install whisper-cpp uv
 
 These scripts were written for the model comparison, so they also fetch comparison models (several GB beyond the defaults). Read them first and delete the lines for models you don't want.
 
-For English-only calls, put Whisper large-v3 where the app expects it:
+For English-only calls, put Whisper large-v3-turbo (5-bit) where the app expects it:
 
 ```bash
-curl -L -o "$HOME/Library/Application Support/Scribe/Models/ggml-large-v3-f16.bin" \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
+curl -L -o "$HOME/Library/Application Support/Scribe/Models/ggml-large-v3-turbo-q5_0.bin" \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
 ```
 
 **Build and install.**
 
 ```bash
-./build.sh                  # compile, bundle, ad-hoc sign, install to /Applications
+./build.sh                  # compile, bundle, sign, install to /Applications
 NO_INSTALL=1 ./build.sh     # compile and bundle only, prints the .app path
 ```
 
-Open Scribe, then open **AI Models** to check that Local shows Ready. Allow the microphone when asked. For computer audio, allow Scribe under System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen.
+Open Scribe, then open Settings (Cmd+, ) to check that Local shows Ready. Allow the microphone when asked. For computer audio, allow Scribe under System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen.
 
-Cloud engines are optional. Add a key and the exact model name in **AI Models** to use one. Keys go to the Keychain.
+Cloud engines are optional. Add a key in Settings to use one, and pick or type a model name. Keys go to the Keychain.
+
+**Stable signing (optional).** macOS ties the microphone and screen recording grants to the app's signing requirement, and an ad-hoc signature changes on every build, so the grants are asked again after each rebuild. `build.sh` signs with a local self-signed certificate named "Scribe Local Signing" when it finds one, and falls back to ad-hoc otherwise. [`assets/README.md`](assets/README.md) has the one-time commands to make the certificate and to check the requirement stays the same. The private key never goes in the repository.
 
 ## Tests
 
@@ -190,16 +216,20 @@ There's no automated test suite yet. What was checked by hand in the build sessi
 | Local pipeline | End to end on a real clip |
 | Audio writer and format conversion | Synthetic audio |
 | Folder logic | 15 checks |
-| English-only path | A 30 second slice |
-| UI snapshots | Light mode |
+| English-only path | A 30 second slice, with large-v3 at full precision |
+| UI snapshots | Light mode, of the earlier UI |
 
-What wasn't checked: live microphone recording, live computer audio, every cloud request, drag and drop, and dark mode. The [SRS](docs/SRS.md) marks each requirement as verified, built but untested, or planned, and lists 17 known gaps.
+Those runs predate the progress output, the new English default, chunking, search, export, model lists, and the Graphite redesign, so the SRS counts those as built but untested.
+
+What wasn't checked: live microphone recording, live computer audio, every cloud request and model list request, drag and drop, and dark mode. The [SRS](docs/SRS.md) marks each requirement as verified, built but untested, or planned, and lists 23 known gaps. No automated tests are committed.
 
 ## Documents
 
 - [PRD](docs/PRD.md): the problem, users, goals, principles, success measures, risks, open questions, and the reason behind each decision.
 - [SRS](docs/SRS.md): requirements with IDs, the data model, state and error handling, and a table tracing each requirement to its source file.
-- [Graphite](docs/design/GRAPHITE.md): the design tokens for the dark and light themes.
+- [Graphite](docs/design/GRAPHITE.md): the design tokens for the dark and light themes, the search bar, and progress.
+
+Open items: a live Gemini test with a key, an ElevenLabs live test later, and Windows later.
 
 ## How it was built
 

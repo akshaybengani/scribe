@@ -1,6 +1,152 @@
 import SwiftUI
 import AppKit
+import AVFoundation
+import Network
 import UniformTypeIdentifiers
+
+// MARK: - App-wide UI state
+
+enum AppSection { case record, library, importAudio, settings, setup }
+
+enum SettingsPage: Hashable {
+    case models, local, cloud(ProviderKind), output, storage
+}
+
+enum AppModal: Identifiable {
+    case newFolder(parent: String?)
+    case editFolder(Folder)
+    case deleteFolder(Folder)
+    case deleteRecording(Recording)
+    case confirmCloud(Recording, ProviderKind)
+    case export(ids: [String])
+    case moveRecording(Recording)
+    case deleteAll
+    case shortcuts
+    case about
+
+    var id: String {
+        switch self {
+        case .newFolder(let p): return "new-" + (p ?? "root")
+        case .editFolder(let f): return "edit-" + f.id
+        case .deleteFolder(let f): return "delete-folder-" + f.id
+        case .deleteRecording(let r): return "delete-rec-" + r.id
+        case .confirmCloud(let r, let k): return "cloud-\(r.id)-\(k.rawValue)"
+        case .export(let ids): return "export-" + ids.joined(separator: ",")
+        case .moveRecording(let r): return "move-" + r.id
+        case .deleteAll: return "delete-all"
+        case .shortcuts: return "shortcuts"
+        case .about: return "about"
+        }
+    }
+}
+
+struct PendingRecording {
+    let id: String
+    let url: URL
+}
+
+/// What the "Recording saved" screen shows after Stop.
+struct SavedRecording: Equatable {
+    let id: String
+    let provider: ProviderKind
+    let sources: String
+}
+
+/// Everything that is about the window rather than the data: which screen, which folder, which dialog.
+@MainActor
+final class UIState: ObservableObject {
+    @Published var section: AppSection = .record
+    @Published var selection: String?          // recording shown in the detail screen
+    @Published var folder: String?             // current folder; new recordings and imports go here
+    @Published var collapsed: Set<String> = [] // folders collapsed in the sidebar tree
+    @Published var modal: AppModal?
+    @Published var toasts: [ToastItem] = []
+    @Published var settingsPage: SettingsPage = .models
+    /// A recording in progress keeps its file here so it survives switching screens.
+    @Published var pending: PendingRecording?
+    /// Set when Stop has saved a recording; the Record screen then shows its saved-and-transcribing state.
+    @Published var justSaved: SavedRecording?
+
+    /// Bumped by Cmd+K and the sidebar Search entry; the global search field focuses itself when it changes.
+    @Published var searchFocusToken = 0
+    /// Set when a search result opens a recording: the detail screen opens its find bar on this query.
+    @Published var pendingFind: FindRequest?
+    /// Bumped by Cmd+F; the detail screen opens or focuses its find bar.
+    @Published var findToken = 0
+    /// True while the search field has focus; the results panel shows exactly then.
+    @Published var searchOpen = false
+
+    /// Library multi-select.
+    @Published var selectionMode = false
+    @Published var selectedIDs: Set<String> = []
+
+    private var previous: AppSection = .record
+    /// Registered by the recording detail screen so Cmd+E can export the transcript on screen.
+    var exportHandler: (() -> Void)?
+
+    func focusSearch() { searchFocusToken += 1 }
+
+    func goRecord() { selection = nil; justSaved = nil; section = .record }
+
+    func goLibrary(folder: String?) {
+        self.folder = folder
+        selection = nil
+        section = .library
+    }
+
+    func open(recording id: String, folder: String?) {
+        self.folder = folder
+        selection = id
+        section = .library
+    }
+
+    func openSettings(_ page: SettingsPage = .models) {
+        if section != .settings { previous = section }
+        settingsPage = page
+        section = .settings
+    }
+
+    func closeSettings() {
+        section = previous == .settings ? .record : previous
+    }
+
+    func endSelection() {
+        selectionMode = false
+        selectedIDs = []
+    }
+
+    func toast(_ text: String, icon: String? = "checkmark.circle", swatch: Color? = nil,
+               actionTitle: String? = nil, action: (() -> Void)? = nil) {
+        var item = ToastItem(text: text, icon: icon, swatch: swatch)
+        item.actionTitle = actionTitle
+        item.action = action
+        toasts.append(item)
+        if toasts.count > 3 { toasts.removeFirst(toasts.count - 3) }
+        let id = item.id
+        let life: UInt64 = actionTitle == nil ? 2_600_000_000 : 6_000_000_000
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: life)
+            toasts.removeAll { $0.id == id }
+        }
+    }
+}
+
+/// Whether this Mac has a network path. Cloud models need one; the local model does not.
+@MainActor
+final class NetworkStatus: ObservableObject {
+    @Published private(set) var isOnline = true
+    private let monitor = NWPathMonitor()
+
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { @MainActor in self?.isOnline = online }
+        }
+        monitor.start(queue: DispatchQueue(label: "scribe.network"))
+    }
+
+    deinit { monitor.cancel() }
+}
 
 // MARK: - Root
 
@@ -8,11 +154,12 @@ struct ContentView: View {
     @EnvironmentObject var store: RecordingStore
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var jobs: JobRunner
-    @State private var selection: String?
-    @State private var folder: String?
-    @State private var showSettings = false
+    @EnvironmentObject var ui: UIState
+    @EnvironmentObject var search: SearchModel
+    @StateObject private var recorder = Recorder()
+    @StateObject private var network = NetworkStatus()
 
-    /// Shown on top of the whole app whenever a cloud model is chosen or a cloud job is running.
+    /// Shown on top of the main area whenever a cloud model is chosen or a cloud job is running.
     private var warning: String? {
         var kinds = jobs.runningCloudKinds
         if settings.primary.isCloud { kinds.insert(settings.primary) }
@@ -26,404 +173,176 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let warning { WarningBanner(text: warning) }
-            NavigationSplitView {
-                LibrarySidebar(selection: $selection, folder: $folder)
-                    .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
-            } detail: {
-                if let id = selection, let rec = store.recordings.first(where: { $0.id == id }) {
-                    DetailView(recording: rec, showSettings: $showSettings).id(rec.id)
-                } else {
-                    HomeView(selection: $selection, folder: $folder, showSettings: $showSettings)
+        GeometryReader { geo in
+            ZStack {
+                G.bg
+                HStack(spacing: 0) {
+                    SidebarView().frame(width: 248)
+                    Rectangle().fill(G.border).frame(width: 1)
+                    VStack(spacing: 0) {
+                        if let warning { WarningBanner(text: warning).padding(.horizontal, 28).padding(.top, 16) }
+                        router
+                    }
+                    .padding(.top, 28)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                GlobalSearch(width: geo.size.width * 0.4)
+                if let modal = ui.modal { ModalLayer(modal: modal) }
+                VStack(spacing: 8) {
+                    Spacer().allowsHitTesting(false)
+                    ForEach(ui.toasts) { ToastView(item: $0).transition(.move(edge: .bottom).combined(with: .opacity)) }
+                }
+                .padding(.bottom, 24)
+                .animation(.easeOut(duration: 0.18), value: ui.toasts)
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button { showSettings = true } label: { Label("AI Models", systemImage: "gearshape") }
-                    .help("AI models and API keys")
+        .ignoresSafeArea()
+        .environmentObject(recorder)
+        .environmentObject(network)
+        .foregroundStyle(G.text)
+        .font(GFont.ui(14))
+        .frame(minWidth: 940, minHeight: 660)
+        .onAppear {
+            if !UserDefaults.standard.bool(forKey: "setupSkipped"), SetupItems(settings: settings).attentionCount > 0 {
+                ui.section = .setup
             }
+            Task { await settings.refreshStaleModels() }
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsView().environmentObject(settings)
-        }
-        .frame(minWidth: 860, minHeight: 560)
     }
-}
 
-struct WarningBanner: View {
-    let text: String
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text(text).font(.callout.weight(.medium))
-            Spacer()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 8)
-        .foregroundStyle(.black)
-        .background(Color.orange)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-// MARK: - Home: choose a model, record or import
-
-struct ModelPicker: View {
-    @EnvironmentObject var settings: AppSettings
-    @Binding var showSettings: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text("Transcribe with").foregroundStyle(.secondary)
-            Picker("", selection: $settings.primary) {
-                ForEach(ProviderKind.allCases.filter(\.hearsAudio)) { k in
-                    Text((k.isCloud ? "☁ " : "") + settings.name(k)).tag(k)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 280)
-            if let issue = settings.issue(for: settings.primary) {
-                Button { showSettings = true } label: {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                }
-                .buttonStyle(.borderless)
-                .help(issue)
+    @ViewBuilder private var router: some View {
+        switch ui.section {
+        case .record: RecordView()
+        case .importAudio: ImportView()
+        case .library:
+            if let id = ui.selection, let rec = store.recordings.first(where: { $0.id == id }) {
+                DetailView(recording: rec).id(rec.id)
             } else {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).help("Model is ready")
+                LibraryView()
             }
+        case .settings: SettingsView()
+        case .setup: SetupView()
         }
     }
 }
 
-struct HomeView: View {
-    @EnvironmentObject var store: RecordingStore
+// MARK: - First-run setup
+
+/// What the first-run checklist looks at. Also decides whether it shows on launch.
+@MainActor
+struct SetupItems {
+    let settings: AppSettings
+
+    var whisperOK: Bool { FileManager.default.isExecutableFile(atPath: settings.whisperPath) }
+    var modelOK: Bool { FileManager.default.fileExists(atPath: settings.localModelPath) }
+    var micStatus: AVAuthorizationStatus { AVCaptureDevice.authorizationStatus(for: .audio) }
+    var micDenied: Bool { micStatus == .denied || micStatus == .restricted }
+    var screenOK: Bool { CGPreflightScreenCaptureAccess() }
+
+    /// Items that stop something the user has asked for from working.
+    var attentionCount: Int {
+        var n = 0
+        if !whisperOK { n += 1 }
+        if !modelOK { n += 1 }
+        if micDenied { n += 1 }
+        if settings.captureSystemAudio && !screenOK { n += 1 }
+        return n
+    }
+}
+
+struct SetupView: View {
     @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var jobs: JobRunner
-    @StateObject private var recorder = Recorder()
-    @Binding var selection: String?
-    @Binding var folder: String?
-    @Binding var showSettings: Bool
-    @State private var pending: (id: String, url: URL)?
-    @State private var notice: String?
+    @EnvironmentObject var ui: UIState
+    @State private var tick = 0
 
     var body: some View {
-        VStack(spacing: 22) {
-            Spacer()
+        let items = SetupItems(settings: settings)
+        let attention = items.attentionCount
+        VStack(alignment: .leading, spacing: 16) {
+            LogoMark(size: 44)
+            PageHeader(title: "Set up Scribe",
+                       badge: AnyView(attention > 0
+                                      ? StatusPill(kind: .warn, text: "\(attention) need\(attention == 1 ? "s" : "") attention")
+                                      : StatusPill(kind: .ready, text: "All set"))) { EmptyView() }
+            Text("Scribe records on this Mac and transcribes with a local model by default. Work through what needs attention, then check again.")
+                .font(GFont.ui(14)).foregroundStyle(G.text2).lineSpacing(3).frame(maxWidth: 640, alignment: .leading)
+            ScrollView {
+                VStack(spacing: 0) {
+                    row(icon: "terminal", title: "whisper-cli is installed",
+                        detail: items.whisperOK ? "Found at \(settings.whisperPath)" : "Not found at \(settings.whisperPath). Install it with: brew install whisper-cpp",
+                        state: items.whisperOK ? .ok : .attention, button: "Change path") { ui.openSettings(.local) }
+                    row(icon: "cpu", title: "Local model file is present",
+                        detail: items.modelOK ? "Found at \(settings.localModelPath)" : "Not found: \(settings.localModelPath)",
+                        state: items.modelOK ? .ok : .attention, button: "Choose model file") { ui.openSettings(.local) }
+                    row(icon: "mic", title: "Microphone permission",
+                        detail: items.micDenied ? "Microphone access is off. Allow Scribe in System Settings."
+                            : (items.micStatus == .authorized ? "Scribe can use the microphone." : "Scribe will ask the first time you record."),
+                        state: items.micDenied ? .attention : (items.micStatus == .authorized ? .ok : .optional),
+                        button: "Open System Settings") { openPrivacy("Privacy_Microphone") }
+                    row(icon: "display", title: "Computer audio permission",
+                        detail: items.screenOK ? "Scribe can capture computer audio."
+                            : "Screen & System Audio Recording is off. It is needed to capture Teams and Meet. Quit and reopen Scribe after turning it on.",
+                        state: items.screenOK ? .ok : (settings.captureSystemAudio ? .attention : .optional),
+                        button: "Open System Settings") { openPrivacy("Privacy_ScreenCapture") }
+                    row(icon: "key", title: "Cloud keys (optional)",
+                        detail: "Gemini and ElevenLabs hear audio. Claude only reviews transcript text, because it cannot hear audio.",
+                        state: .optional, button: "Open AI Models", last: true) { ui.openSettings(.models) }
+                }
+                .clippedCard()
+            }
+            .id(tick)
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    GIcon(attention > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle", size: 14)
+                        .foregroundStyle(attention > 0 ? G.warnIcon : G.success)
+                    Text(attention > 0 ? "\(attention) of 5 items need attention. Everything else is ready." : "Everything Scribe needs is ready.")
+                        .font(GFont.ui(13)).foregroundStyle(G.text2)
+                }
+                Spacer()
+                Button("Skip for now") { finish() }.buttonStyle(.g(.secondary, height: 36))
+                Button { tick += 1 } label: { IconLabel("Check again", "arrow.clockwise") }
+                    .buttonStyle(.g(.primary, height: 40))
+                if attention == 0 {
+                    Button("Start recording") { finish() }.buttonStyle(.g(.primary, height: 40))
+                }
+            }
+        }
+        .padding(.top, 24).padding(.horizontal, 28).padding(.bottom, 28)
+    }
+
+    private enum RowState { case ok, attention, optional }
+
+    private func row(icon: String, title: String, detail: String, state: RowState, button: String,
+                     last: Bool = false, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 16) {
+            IconTile(icon: icon)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(GFont.ui(14, .semibold))
+                Text(detail).font(GFont.ui(12)).foregroundStyle(G.text2).lineSpacing(2).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
             HStack(spacing: 6) {
-                Image(systemName: "folder.fill").foregroundStyle(store.folder(folder)?.color.swiftUI ?? .secondary)
-                Text("Saving into \(store.path(of: folder))").font(.callout).foregroundStyle(.secondary)
+                GIcon(state == .ok ? "checkmark.circle" : (state == .attention ? "exclamationmark.triangle.fill" : "minus.circle"), size: 14)
+                Text(state == .ok ? "Ready" : (state == .attention ? "Needs attention" : "Optional"))
             }
-            ModelPicker(showSettings: $showSettings)
-            Picker("Call language", selection: $settings.callLanguage) {
-                ForEach(CallLanguage.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 300)
-            .disabled(recorder.isRecording)
-            .help("English only uses English-specific models. Hindi + English uses the code-switching model.")
-            Toggle("Also record computer audio (Teams, Meet and browser calls)", isOn: $settings.captureSystemAudio)
-                .toggleStyle(.checkbox)
-                .disabled(recorder.isRecording)
-                .help("Captures everything this Mac plays. Use headphones so the microphone does not pick up the speakers a second time.")
-            VStack(spacing: 10) {
-                LaneView(title: "Microphone", levels: recorder.micLevels, active: recorder.isRecording && !recorder.isPaused, tint: .red)
-                if recorder.hasSystemAudio || (!recorder.isRecording && settings.captureSystemAudio) {
-                    LaneView(title: "Computer audio", levels: recorder.systemLevels, active: recorder.isRecording && !recorder.isPaused, tint: .blue)
-                }
-            }
-            .padding(.horizontal, 30)
-            Text(formatTime(recorder.elapsed))
-                .font(.system(size: 34, weight: .light).monospacedDigit())
-            HStack(spacing: 30) {
-                if recorder.isRecording {
-                    Button { recorder.togglePause() } label: {
-                        Image(systemName: recorder.isPaused ? "play.fill" : "pause.fill").font(.title2).frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(.bordered).clipShape(Circle())
-                    .help(recorder.isPaused ? "Resume" : "Pause")
-                }
-                Button(action: toggleRecording) {
-                    ZStack {
-                        Circle().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 3).frame(width: 72, height: 72)
-                        if recorder.isRecording {
-                            RoundedRectangle(cornerRadius: 5).fill(Color.red).frame(width: 26, height: 26)
-                        } else {
-                            Circle().fill(Color.red).frame(width: 58, height: 58)
-                        }
-                    }
-                    .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help(recorder.isRecording ? "Stop and transcribe" : "Start recording")
-            }
-            Button("Import audio file…", action: importAudio).disabled(recorder.isRecording)
-            if recorder.micDenied {
-                Text("Microphone access is off. Allow Scribe in System Settings > Privacy & Security > Microphone.")
-                    .foregroundStyle(.red).font(.callout)
-            }
-            if recorder.screenDenied {
-                Text("Computer audio needs Screen & System Audio Recording access. Allow Scribe in System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen Scribe.")
-                    .foregroundStyle(.red).font(.callout).multilineTextAlignment(.center)
-            }
-            if let message = recorder.errorMessage {
-                Text(message).foregroundStyle(.orange).font(.callout).multilineTextAlignment(.center)
-            }
-            if let notice { Text(notice).foregroundStyle(.red).font(.callout) }
-            Spacer()
-            Text(settings.primary.isCloud
-                 ? "The selected model is in the cloud. Choose a Local model to keep audio on this Mac."
-                 : "Local model selected. Audio stays on this Mac.")
-                .font(.caption).foregroundStyle(.secondary)
+            .font(GFont.ui(12, .semibold))
+            .foregroundStyle(state == .ok ? G.success : (state == .attention ? G.warnIcon : G.text2))
+            .frame(width: 132, alignment: .leading)
+            Button(button, action: action).buttonStyle(.g(.secondary, height: 36)).frame(width: 168)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 20).padding(.vertical, 16)
+        .overlay(alignment: .bottom) { if !last { Rectangle().fill(G.border).frame(height: 1) } }
     }
 
-    private func toggleRecording() {
-        notice = nil
-        if recorder.isRecording {
-            Task {
-                let duration = await recorder.stop()
-                guard let p = pending else { return }
-                pending = nil
-                let title = "Recording " + Date().formatted(date: .abbreviated, time: .shortened)
-                let rec = store.create(id: p.id, title: title, audioFile: p.url.lastPathComponent, duration: duration,
-                                       language: settings.callLanguage, folderID: folder)
-                selection = rec.id
-                jobs.start(rec, kind: settings.primary)
-            }
-        } else {
-            let id = UUID().uuidString
-            let url = store.newAudioURL(id: id, ext: "m4a")
-            pending = (id, url)
-            Task {
-                if await recorder.start(to: url, withSystemAudio: settings.captureSystemAudio) == false {
-                    pending = nil
-                    store.delete(id)
-                    if !recorder.micDenied && !recorder.screenDenied && recorder.errorMessage == nil { notice = "Could not start recording." }
-                }
-            }
-        }
+    private func finish() {
+        UserDefaults.standard.set(true, forKey: "setupSkipped")
+        ui.goRecord()
     }
 
-    private func importAudio() {
-        notice = nil
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.audio]
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose an audio file to transcribe"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let rec = try store.importAudio(from: url, language: settings.callLanguage, folderID: folder)
-            selection = rec.id
-            jobs.start(rec, kind: settings.primary)
-        } catch {
-            notice = "Could not import that file: \(error.localizedDescription)"
-        }
-    }
-}
-
-/// One waveform lane with a small label, like a track in Voice Memos.
-struct LaneView: View {
-    let title: String
-    let levels: [Float]
-    let active: Bool
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            WaveformView(levels: levels, active: active, tint: tint).frame(height: 64)
-        }
-    }
-}
-
-// MARK: - Detail: play, read, export, ask for more opinions
-
-struct DetailView: View {
-    let recording: Recording
-    @Binding var showSettings: Bool
-    @EnvironmentObject var store: RecordingStore
-    @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var jobs: JobRunner
-    @StateObject private var player = Player()
-    @State private var chosen: ProviderKind?
-    @State private var confirm: ProviderKind?
-
-    private var shown: TranscriptResult? {
-        recording.results.first { $0.provider == chosen } ?? recording.results.first
-    }
-
-    private var runningKinds: [ProviderKind] {
-        ProviderKind.allCases.filter { jobs.isRunning(recording.id, $0) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                TextField("Title", text: Binding(get: { recording.title }, set: { store.rename(recording.id, to: $0) }))
-                    .textFieldStyle(.plain).font(.title2.bold())
-                Text(recording.callLanguage.title)
-                    .font(.caption)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(Color.secondary.opacity(0.15)))
-            }
-            playerBar
-            tabsRow
-            transcriptArea
-            actionsRow
-        }
-        .padding(20)
-        .onAppear { player.load(store.audioURL(for: recording)) }
-        .onDisappear { player.stop() }
-        .confirmationDialog(confirmTitle, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
-                            titleVisibility: .visible) {
-            if let k = confirm {
-                Button("Send to \(k.company)") { jobs.start(recording, kind: k); confirm = nil }
-                Button("Cancel", role: .cancel) { confirm = nil }
-            }
-        } message: {
-            Text(confirmMessage)
-        }
-    }
-
-    private var confirmTitle: String { confirm.map { "Send to \($0.company)?" } ?? "" }
-    private var confirmMessage: String {
-        guard let k = confirm else { return "" }
-        return k.hearsAudio
-            ? "This audio will be uploaded to \(k.company), a third-party platform, for processing."
-            : "The existing transcripts (text only, no audio) will be sent to \(k.company), a third-party platform."
-    }
-
-    // MARK: Player
-
-    private var playerBar: some View {
-        HStack(spacing: 12) {
-            Button { player.toggle() } label: { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").frame(width: 22) }
-                .help(player.isPlaying ? "Pause" : "Play")
-            Button { player.stop() } label: { Image(systemName: "stop.fill").frame(width: 22) }.help("Stop")
-            Text(formatTime(player.current)).monospacedDigit().foregroundStyle(.secondary)
-            Slider(value: Binding(get: { player.current }, set: { player.seek($0) }), in: 0...max(player.duration, 1))
-            Text(formatTime(player.duration)).monospacedDigit().foregroundStyle(.secondary)
-            Button("Export audio…", action: exportAudio)
-            Button { NSWorkspace.shared.activateFileViewerSelecting([store.audioURL(for: recording)]) } label: {
-                Image(systemName: "folder")
-            }
-            .help("Show the saved audio file in Finder")
-        }
-    }
-
-    // MARK: Transcript tabs
-
-    private var tabsRow: some View {
-        HStack(spacing: 8) {
-            ForEach(recording.results) { r in
-                Button { chosen = r.provider } label: {
-                    HStack(spacing: 4) {
-                        if r.provider.isCloud { Image(systemName: "cloud") }
-                        Text(r.tabTitle)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .tint(shown?.provider == r.provider ? .accentColor : .gray)
-                .help("\(r.modelName), \(Int(r.seconds)) s")
-            }
-            ForEach(runningKinds) { k in
-                HStack(spacing: 6) { ProgressView().controlSize(.small); Text(k.short + "…") }
-                    .padding(.horizontal, 8)
-            }
-            Spacer()
-        }
-    }
-
-    private var transcriptArea: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(ProviderKind.allCases.filter { jobs.error(recording.id, $0) != nil }) { k in
-                HStack(alignment: .top) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text("\(k.short): \(jobs.error(recording.id, k) ?? "")").font(.callout).textSelection(.enabled)
-                    Spacer()
-                    if settings.issue(for: k, language: recording.callLanguage) != nil { Button("AI Models") { showSettings = true } }
-                    Button("Dismiss") { jobs.dismissError(recording.id, k) }
-                }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
-            }
-            if let r = shown {
-                ScrollView {
-                    Text(r.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                }
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-            } else if runningKinds.isEmpty {
-                VStack(spacing: 10) {
-                    Text("No transcript yet.").foregroundStyle(.secondary)
-                    Button("Transcribe with \(settings.name(settings.primary, language: recording.callLanguage))") { start(settings.primary) }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text("Transcribing… this can take a while for long recordings.").foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-
-    // MARK: Actions
-
-    private var actionsRow: some View {
-        HStack(spacing: 10) {
-            Button("Copy transcript") { copy(shown?.text ?? "") }.disabled(shown == nil)
-            Button("Copy for Claude") { copy(settings.template + (shown?.text ?? "")) }.disabled(shown == nil)
-            Button("Export transcript…", action: exportTranscript).disabled(shown == nil)
-            Spacer()
-            Menu("Get another opinion") {
-                ForEach(ProviderKind.allCases) { k in
-                    let already = recording.results.contains { $0.provider == k }
-                    Button {
-                        start(k)
-                    } label: {
-                        Text((k.isCloud ? "☁ " : "") + k.title + (already ? " (run again)" : "") + (k.hearsAudio ? "" : " · reads text only"))
-                    }
-                    .disabled(jobs.isRunning(recording.id, k) || (!k.hearsAudio && recording.results.isEmpty))
-                }
-            }
-            .menuStyle(.borderedButton)
-            .fixedSize()
-        }
-    }
-
-    private func start(_ k: ProviderKind) {
-        if settings.issue(for: k, language: recording.callLanguage) != nil {
-            jobs.start(recording, kind: k)      // records the "not ready" message as an error row
-            return
-        }
-        if k.isCloud { confirm = k } else { jobs.start(recording, kind: k) }
-    }
-
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func exportTranscript() {
-        guard let r = shown else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "\(recording.title) (\(r.tabTitle)).txt"
-        if panel.runModal() == .OK, let url = panel.url { try? r.text.write(to: url, atomically: true, encoding: .utf8) }
-    }
-
-    private func exportAudio() {
-        let src = store.audioURL(for: recording)
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(recording.title).\(src.pathExtension)"
-        if panel.runModal() == .OK, let url = panel.url {
-            try? FileManager.default.removeItem(at: url)
-            try? FileManager.default.copyItem(at: src, to: url)
+    private func openPrivacy(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+            NSWorkspace.shared.open(url)
         }
     }
 }
