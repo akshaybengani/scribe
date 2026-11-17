@@ -17,6 +17,27 @@ Built for calls that mix Hindi and English in one sentence. It doesn't write not
 
 ---
 
+## Screenshots
+
+The app follows the system theme, so every screen exists in dark and light. All data in these images is made up for the screenshots.
+
+| Dark | Light |
+|---|---|
+| <img src="docs/screenshots/record-dark.png" alt="Record screen in dark mode: model choice, call language, sources, and the live capture card with the timer and a start button" width="100%" /> | <img src="docs/screenshots/record-light.png" alt="Record screen in light mode: model choice, call language, sources, and the live capture card with the timer and a start button" width="100%" /> |
+| **Record.** Pick a local or cloud model, then start. | **Record.** The same screen in the light theme. |
+| <img src="docs/screenshots/library-dark.png" alt="Library in dark mode: nested colour coded folders in the sidebar, folder totals, subfolder cards and a table of recordings" width="100%" /> | <img src="docs/screenshots/library-light.png" alt="Library in light mode: nested colour coded folders in the sidebar, folder totals, subfolder cards and a table of recordings" width="100%" /> |
+| **Library.** Nested, colour coded folders with totals. | **Library.** Light theme. |
+| <img src="docs/screenshots/transcript-search-dark.png" alt="Transcript with coloured speaker blocks and the global search bar open with highlighted results" width="100%" /> | <img src="docs/screenshots/transcript-search-light.png" alt="Transcript with coloured speaker blocks and the global search bar open with highlighted results, light theme" width="100%" /> |
+| **Transcript and search.** Speaker blocks, and results from every transcript under the search bar. | **Transcript and search.** Light theme. |
+| <img src="docs/screenshots/progress-dark.png" alt="Live progress card for a long local transcription: percent, one bar, elapsed time, time left, chunk and speed" width="100%" /> | <img src="docs/screenshots/progress-light.png" alt="Live progress card for a long local transcription in the light theme" width="100%" /> |
+| **Live progress.** Percent, elapsed time, time left, and chunk x of y for long recordings. | **Live progress.** Light theme. |
+| <img src="docs/screenshots/export-dark.png" alt="Library with three recordings selected and the export dialog listing audio, one text file per model, combined Markdown and metadata" width="100%" /> | <img src="docs/screenshots/export-light.png" alt="Library with three recordings selected and the export dialog, light theme" width="100%" /> |
+| **Export.** Select several recordings and export everything for each one. | **Export.** Light theme. |
+| <img src="docs/screenshots/settings-dark.png" alt="Settings AI Models page listing the local engine and three cloud providers with their readiness" width="100%" /> | <img src="docs/screenshots/settings-light.png" alt="Settings AI Models page in the light theme" width="100%" /> |
+| **Settings, AI Models.** Each provider shows whether it is ready. | **Settings, AI Models.** Light theme. |
+
+---
+
 ## Why this exists
 
 Most of my calls mix Hindi and English inside a single sentence. Transcription tools are built for one language at a time, so Hinglish comes back with wrong words, the wrong script, or both. The tools that handle it well are cloud services, and I'd rather not send private conversations to someone else's platform to get notes out of them.
