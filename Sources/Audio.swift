@@ -368,6 +368,10 @@ final class Recorder: NSObject, ObservableObject {
         await cap?.stop()
         let duration = writer?.seconds ?? elapsed
         cleanup()
+        // Back to an idle screen: no leftover timer or waveform from the recording that just ended.
+        elapsed = 0
+        micLevels = []
+        systemLevels = []
         return duration
     }
 
