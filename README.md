@@ -19,7 +19,7 @@ Built for calls that mix Hindi and English in one sentence. It doesn't write not
 
 ## Screenshots
 
-The app follows the system theme, so every screen exists in dark and light. All data in these images is made up for the screenshots.
+Every screen exists in dark and light. By default the app follows the system theme; Settings > Appearance can pin it to Light or Dark. All data in these images is made up for the screenshots.
 
 | Dark | Light |
 |---|---|
@@ -86,8 +86,9 @@ Read it with the limits in view: one clip, one meeting, one reference. The local
 
 Each claim below is something you can check without trusting me.
 
-- **The local engine opens no connection.** Network code sits in four files: the cloud transcribers and the Claude reviewer in [`Sources/Providers.swift`](Sources/Providers.swift), the upload helper they share in `Sources/Progress.swift`, and the model-list requests in `Sources/ModelCatalog.swift` (with `Sources/Settings.swift` holding the session). `LocalTranscriber` has none. Check with `grep -n URLSession Sources/*.swift`.
-- **No analytics, no accounts, no backend.** [`build.sh`](build.sh) compiles `Sources/*.swift` against system frameworks only. There are no third-party packages.
+- **The local engine opens no connection.** Network code sits in four files: the cloud transcribers and the Claude reviewer in [`Sources/Providers.swift`](Sources/Providers.swift), the upload helper they share in `Sources/Progress.swift`, and the model-list requests in `Sources/ModelCatalog.swift` (with `Sources/Settings.swift` holding the session). `LocalTranscriber` has none, and neither does the Claude Code server in `Sources/MCP/`. Check with `grep -rn URLSession Sources`.
+- **No analytics, no accounts, no backend.** [`build.sh`](build.sh) compiles `Sources/*.swift` and `Sources/MCP/main.swift` against system frameworks only. There are no third-party packages.
+- **The Claude Code server is read-only.** `scribe-mcp` reads the library from disk and never writes to it. Transcript text reaches Anthropic only when you ask Claude Code for a call.
 - **The app declares one usage string, the microphone.** Computer audio asks for Screen & System Audio Recording at runtime, only when you tick it.
 - **Model lists need a key.** The only extra network calls are the providers' list-models requests, and they run only after you enter that provider's key, to that provider's own host.
 - **API keys live in the macOS Keychain**, service `com.akshaybengani.scribe`. Check with `security find-generic-password -s com.akshaybengani.scribe`. They're never written to preferences, `meta.json`, or exports.
@@ -112,7 +113,7 @@ What the privacy costs:
 
 ## What it does
 
-- **Record** the microphone, optionally with computer audio (Teams, Meet, browser calls) through ScreenCaptureKit, mixed into one 16 kHz mono AAC file. Pause and resume.
+- **Record** the microphone, optionally with computer audio (Teams, Meet, browser calls) through ScreenCaptureKit, mixed into one 16 kHz mono AAC file. Pause and resume with the large button or Space. Stop is click-only, so a stray key can't end a call.
 - **Import** any audio file. It's copied into the library and the original is left alone.
 - **Choose a call language** per recording: Hindi + English, or English only (a separate model file and prompt, large-v3-turbo at 5-bit by default).
 - **Transcribe** with Local (whisper.cpp), Gemini, or ElevenLabs Scribe. Claude reviews existing transcripts as text only.
@@ -120,7 +121,8 @@ What the privacy costs:
 - **Search** every title, folder, and transcript from the bar at the top (Cmd+K), then find within a transcript.
 - **Speaker labels** appear only when a provider returns them (ElevenLabs and Gemini 3.5 Transcribe). Nothing extra is added otherwise.
 - **Pick models from each provider's own list** once a key exists, audio models first. The names load from the provider's list-models API.
-- **Follow the system theme**: the Graphite design in light or dark, with Space to play and pause, Cmd+N, Cmd+Shift+N, Cmd+, , Cmd+E, and Cmd+K.
+- **Choose a theme** in Settings > Appearance: System, Light, or Dark, all in the Graphite design. Shortcuts: Space to play and pause (and to pause a recording), Cmd+R to start recording, Cmd+N, Cmd+Shift+N, Cmd+, , Cmd+E, and Cmd+K.
+- **Use calls from Claude Code**: a bundled MCP server lets Claude Code list, search, and import your calls on request. See [Use it from Claude Code](#use-it-from-claude-code).
 - **Keep every opinion** as a tab, one per engine, and ask for more with "Get another opinion".
 - **Organise** recordings in nested, colour-coded folders (nine colours, any depth). Move by menu or drag and drop. Deleting a folder moves its contents up and never deletes audio.
 - **Hand off**: copy the transcript, copy it with an editable notes prompt for Claude, or export it as text. The export dialog writes the audio, a text file per transcript, one combined Markdown file, and a metadata.json for each recording.
@@ -137,6 +139,8 @@ What the privacy costs:
 | Speaker labels | ElevenLabs and Gemini 3.5 Transcribe built, not yet exercised |
 | Gemini, ElevenLabs, and Claude requests | Built, never run: no API keys were present. The default Gemini model goes through the Interactions API, written from Google's docs and never sent. |
 | Live microphone and computer audio capture, drag and drop | Built, not yet exercised |
+| Claude Code MCP server (`scribe-mcp`) | Built. All five tools checked by hand against a real library, and connected in Claude Code. |
+| Settings > Appearance, Settings > Claude Code, Space to pause a recording, click-only Stop | Built, not yet exercised |
 | Confirmation before every cloud send | Not built (see the gap above) |
 | Local chunking, compare-opinions view, Windows | Not built |
 
@@ -166,7 +170,8 @@ Sources/
   Progress.swift      job progress, whisper-cli progress parsing, speaker labels
   ModelCatalog.swift  curated names and each provider's list-models API
   Settings.swift      settings, Keychain, model catalogs
-  SettingsView.swift  the Settings sheet
+  SettingsView.swift  the Settings sheet, including Appearance and Claude Code
+  MCP/main.swift      scribe-mcp, the read-only MCP server for Claude Code
   Search.swift        global search index and query engine
   SearchBar.swift     the search bar and results panel
   Export.swift        export engine
@@ -228,6 +233,28 @@ Cloud engines are optional. Add a key in Settings to use one, and pick or type a
 
 **Stable signing (optional).** macOS ties the microphone and screen recording grants to the app's signing requirement, and an ad-hoc signature changes on every build, so the grants are asked again after each rebuild. `build.sh` signs with a local self-signed certificate named "Scribe Local Signing" when it finds one, and falls back to ad-hoc otherwise. [`assets/README.md`](assets/README.md) has the one-time commands to make the certificate and to check the requirement stays the same. The private key never goes in the repository.
 
+## Use it from Claude Code
+
+Scribe ships an MCP server, `scribe-mcp`, inside the app. Claude Code can use it to find and import your calls. It's read-only: Claude can list, search, and read calls, but never change or delete them. It reads the library straight from disk, so it works even when Scribe is closed.
+
+`build.sh` builds the server from the app's own model, search, and export code, so search results and the imported Markdown match the app exactly. Add it to Claude Code once, for every project:
+
+```bash
+claude mcp add --scope user scribe -- /Applications/Scribe.app/Contents/MacOS/scribe-mcp
+```
+
+Settings > Claude Code shows whether it's added, with the command and the server path to copy. Remove it with `claude mcp remove scribe -s user`.
+
+| Tool | What it does |
+|---|---|
+| `get_latest_call` | Import the most recent call with its full transcript |
+| `search_calls` | The same global search as Cmd+K: titles, folders, and every transcript. `"Quotes"` match an exact phrase |
+| `get_call` | Import any call by id (a short prefix works), with one chosen transcript or all of them |
+| `list_recent_calls` | The latest calls with date, length, language, and folder |
+| `list_folders` | The folder tree, and the calls inside a folder |
+
+Then ask Claude Code things like "import my latest Scribe call" or "search my calls for 'design portal'".
+
 ## Tests
 
 There's no automated test suite yet. What was checked by hand in the build session:
@@ -239,6 +266,7 @@ There's no automated test suite yet. What was checked by hand in the build sessi
 | Folder logic | 15 checks |
 | English-only path | A 30 second slice, with large-v3 at full precision |
 | UI snapshots | Light mode, of the earlier UI |
+| Claude Code MCP server | All five tools, unknown ids, missing transcripts, and bad requests, over stdio against a real library |
 
 Those runs predate the progress output, the new English default, chunking, search, export, model lists, and the Graphite redesign, so the SRS counts those as built but untested.
 
