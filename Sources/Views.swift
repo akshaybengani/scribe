@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 enum AppSection { case record, library, importAudio, settings, setup }
 
 enum SettingsPage: Hashable {
-    case models, local, cloud(ProviderKind), output, storage
+    case models, local, cloud(ProviderKind), output, appearance, claudeCode, storage
 }
 
 enum AppModal: Identifiable {

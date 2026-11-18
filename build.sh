@@ -20,6 +20,18 @@ xcrun swiftc \
   -o "$APP/Contents/MacOS/Scribe" \
   "$ROOT"/Sources/*.swift
 
+# scribe-mcp: the read-only MCP server for Claude Code (Sources/MCP). It reuses the app's model, search
+# and export code so results match the app exactly. Register once:
+#   claude mcp add --scope user scribe -- /Applications/Scribe.app/Contents/MacOS/scribe-mcp
+echo "==> Compiling scribe-mcp"
+xcrun swiftc \
+  -O \
+  -target arm64-apple-macos14.0 \
+  -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+  -o "$APP/Contents/MacOS/scribe-mcp" \
+  "$ROOT"/Sources/Model.swift "$ROOT"/Sources/Search.swift "$ROOT"/Sources/Export.swift \
+  "$ROOT"/Sources/MCP/main.swift
+
 echo "==> Bundling"
 # App icon: assets/branding/AppIcon.icns (rebuild it from icon.svg, see assets/README.md).
 if [ -f "$ROOT/assets/branding/AppIcon.icns" ]; then

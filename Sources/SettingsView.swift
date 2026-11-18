@@ -6,12 +6,14 @@ struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var ui: UIState
 
-    private enum Top: Hashable { case models, output, storage }
+    private enum Top: Hashable { case models, output, appearance, claudeCode, storage }
 
     private var top: Top {
         switch ui.settingsPage {
         case .models, .local, .cloud: return .models
         case .output: return .output
+        case .appearance: return .appearance
+        case .claudeCode: return .claudeCode
         case .storage: return .storage
         }
     }
@@ -27,6 +29,8 @@ struct SettingsView: View {
                 VStack(spacing: 2) {
                     navItem("AI Models", "cpu", on: top == .models) { ui.settingsPage = .models }
                     navItem("Output", "doc.text", on: top == .output) { ui.settingsPage = .output }
+                    navItem("Appearance", "circle.lefthalf.filled", on: top == .appearance) { ui.settingsPage = .appearance }
+                    navItem("Claude Code", "terminal", on: top == .claudeCode) { ui.settingsPage = .claudeCode }
                     navItem("Storage and privacy", "lock.shield", on: top == .storage) { ui.settingsPage = .storage }
                 }
                 .frame(width: 212)
@@ -48,6 +52,8 @@ struct SettingsView: View {
         case .local: LocalModelPage()
         case .cloud(let k): CloudProviderPage(kind: k).id(k)
         case .output: OutputPage()
+        case .appearance: AppearancePage()
+        case .claudeCode: ClaudeCodePage()
         case .storage: StoragePage()
         }
     }
@@ -418,6 +424,188 @@ private struct OutputPage: View {
 
 // MARK: - Storage and privacy
 
+// MARK: - Appearance
+
+private struct AppearancePage: View {
+    @AppStorage(AppTheme.key) private var theme: AppTheme = .system
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                PageTitle(title: "Appearance")
+                Text("Choose light or dark, or let Scribe follow your Mac.")
+                    .font(GFont.ui(14)).foregroundStyle(G.text2)
+            }
+            .padding(.bottom, 4)
+            FieldRow(title: "Theme") {
+                GSegmented(options: AppTheme.allCases, selection: $theme,
+                           title: { $0.title }, icon: { $0.icon }, label: "Theme")
+                Text(theme == .system ? "Matches the light or dark setting in System Settings > Appearance."
+                     : "Scribe stays \(theme.title.lowercased()) whatever macOS is set to.")
+                    .font(GFont.ui(12)).foregroundStyle(G.text3)
+            }
+            .card(padding: 20)
+        }
+        .onChange(of: theme) { _, new in new.apply() }
+    }
+}
+
+// MARK: - Claude Code (MCP)
+
+/// Where Scribe stands in Claude Code. Found by reading ~/.claude.json; Scribe never writes it.
+enum MCPRegistration: Equatable {
+    case notAdded
+    /// Added for every project (user scope).
+    case user(command: String)
+    /// Added only inside these project folders (local scope).
+    case projects([String], command: String)
+
+    static var serverPath: String {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/scribe-mcp").path
+    }
+    static var addCommand: String { "claude mcp add --scope user scribe -- \(serverPath)" }
+    static let removeCommand = "claude mcp remove scribe -s user"
+
+    static func read() -> MCPRegistration {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .notAdded }
+        func command(_ servers: Any?) -> String? {
+            guard let entry = (servers as? [String: Any])?["scribe"] as? [String: Any] else { return nil }
+            return entry["command"] as? String ?? ""
+        }
+        if let c = command(root["mcpServers"]) { return .user(command: c) }
+        var found: [String] = []
+        var cmd = ""
+        for (path, value) in (root["projects"] as? [String: Any]) ?? [:] {
+            if let c = command((value as? [String: Any])?["mcpServers"]) { found.append(path); cmd = c }
+        }
+        return found.isEmpty ? .notAdded : .projects(found.sorted(), command: cmd)
+    }
+}
+
+private struct ClaudeCodePage: View {
+    @EnvironmentObject var ui: UIState
+    @State private var reg: MCPRegistration = .notAdded
+
+    private var serverExists: Bool { FileManager.default.isExecutableFile(atPath: MCPRegistration.serverPath) }
+
+    private let tools: [(String, String)] = [
+        ("get_latest_call", "Import the most recent call with its full transcript"),
+        ("search_calls", "The same global search as ⌘K: titles, folders and every transcript"),
+        ("get_call", "Import any call by id, with a chosen transcript or all of them"),
+        ("list_recent_calls", "The latest calls with date, length, language and folder"),
+        ("list_folders", "The folder tree, and the calls inside a folder"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                PageTitle(title: "Claude Code")
+                Text("Scribe includes an MCP server, so Claude Code can find and import your calls on request. It is read-only: Claude can list, search and read calls, never change or delete them.")
+                    .font(GFont.ui(14)).foregroundStyle(G.text2).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 4)
+            statusCard
+            setupCard
+            toolsCard
+        }
+        .onAppear { reg = MCPRegistration.read() }
+    }
+
+    private var status: (StatusPill.Kind, String, String) {
+        if !serverExists {
+            return (.bad, "Server missing", "This copy of Scribe has no scribe-mcp next to it. Rebuild with build.sh.")
+        }
+        switch reg {
+        case .notAdded:
+            return (.neutral, "Not added", "Claude Code does not know about Scribe yet. Run the command below once.")
+        case .user(let c):
+            return c == MCPRegistration.serverPath
+                ? (.ready, "Added to Claude Code", "Available in every project. Open a new Claude Code session and run /mcp to see it.")
+                : (.warn, "Points elsewhere", "Claude Code runs \(c.isEmpty ? "a different command" : c). Remove it and add it again with the command below.")
+        case .projects(let paths, _):
+            return (.warn, "Added in \(paths.count) project\(paths.count == 1 ? "" : "s") only",
+                    "Only available in: " + paths.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: ", ")
+                    + ". Run the command below to use it everywhere.")
+        }
+    }
+
+    private var statusCard: some View {
+        let (kind, title, detail) = status
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                SectionLabel("Status")
+                Spacer()
+                Button { reg = MCPRegistration.read(); ui.toast("Checked") } label: { IconLabel("Check again", "arrow.clockwise") }
+                    .buttonStyle(.g(.secondary, height: 32))
+            }
+            StatusPill(kind: kind, text: title)
+            Text(detail).font(GFont.ui(13)).foregroundStyle(G.text2).fixedSize(horizontal: false, vertical: true)
+        }
+        .card(padding: 20)
+    }
+
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel("Add to Claude Code")
+            Text("Run this once in Terminal. It makes Scribe available in every Claude Code project.")
+                .font(GFont.ui(13)).foregroundStyle(G.text2)
+            codeBox(MCPRegistration.addCommand)
+            HStack(spacing: 10) {
+                copyButton("Copy command", MCPRegistration.addCommand)
+                copyButton("Copy remove command", MCPRegistration.removeCommand, icon: "minus.circle")
+            }
+            SectionLabel("Server").padding(.top, 6)
+            codeBox(MCPRegistration.serverPath)
+            HStack(spacing: 10) {
+                copyButton("Copy path", MCPRegistration.serverPath)
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: MCPRegistration.serverPath)])
+                } label: { IconLabel("Show in Finder", "folder") }
+                .buttonStyle(.g(.secondary, height: 36))
+                .disabled(!serverExists)
+            }
+            Text("Claude reads your library straight from disk, so it works even when Scribe is closed. Transcripts go to Claude only when you ask it for a call.")
+                .font(GFont.ui(12)).foregroundStyle(G.text3).fixedSize(horizontal: false, vertical: true)
+        }
+        .card(padding: 20)
+    }
+
+    private var toolsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionLabel("What Claude can do")
+            ForEach(tools, id: \.0) { t in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(t.0).font(GFont.mono(12, .medium)).frame(width: 150, alignment: .leading)
+                    Text(t.1).font(GFont.ui(13)).foregroundStyle(G.text2)
+                }
+            }
+            Text("Try asking: “Import my latest Scribe call”, or “Search my calls for \"design portal\"”.")
+                .font(GFont.ui(12)).foregroundStyle(G.text3).padding(.top, 4)
+        }
+        .card(padding: 20)
+    }
+
+    private func codeBox(_ text: String) -> some View {
+        Text(text).font(GFont.mono(12)).textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(G.bg))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(G.borderStrong))
+    }
+
+    private func copyButton(_ title: String, _ value: String, icon: String = "doc.on.doc") -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
+            ui.toast("Copied")
+        } label: { IconLabel(title, icon) }
+        .buttonStyle(.g(.secondary, height: 36))
+    }
+}
+
 private struct StoragePage: View {
     @EnvironmentObject var ui: UIState
     @EnvironmentObject var store: RecordingStore
@@ -519,6 +707,37 @@ private struct StoragePage: View {
             GIcon(icon, size: 14).foregroundStyle(G.accentText).frame(width: 18)
             Text(text).font(GFont.ui(14)).foregroundStyle(G.text2).lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Light, dark, or follow macOS. Stored in UserDefaults under `key` and applied app-wide via `NSApp.appearance`;
+/// every Graphite colour is dynamic, so switching needs no other work.
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system, light, dark
+    static let key = "appTheme"
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .system: return "circle.lefthalf.filled"
+        case .light: return "sun.max"
+        case .dark: return "moon"
+        }
+    }
+    static var current: AppTheme { AppTheme(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .system }
+
+    @MainActor func apply() {
+        switch self {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
         }
     }
 }
