@@ -237,6 +237,7 @@ struct RecordView: View {
     @EnvironmentObject var network: NetworkStatus
     @State private var notice: String?
     @State private var recheck = 0
+    @State private var keyMonitor: Any?
 
     private var issue: String? { settings.issue(for: settings.primary) }
     private var offline: Bool { settings.primary.isCloud && !network.isOnline }
@@ -295,6 +296,29 @@ struct RecordView: View {
         }
         .padding(.top, 24).padding(.horizontal, 28).padding(.bottom, 28)
         .id(recheck)
+        .onAppear { installSpaceKey() }
+        .onDisappear {
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
+        }
+    }
+
+    /// Space pauses and resumes a running recording, unless a text field is being edited or a dialog is open.
+    /// It does nothing when no recording is running, so Space can never start or stop one.
+    private func installSpaceKey() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        let recorder = recorder, ui = ui
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 49, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return event }
+            let handled: Bool = MainActor.assumeIsolated {
+                guard recorder.isRecording, ui.section == .record, ui.modal == nil else { return false }
+                let responder = NSApp.keyWindow?.firstResponder
+                if responder is NSText || responder is NSTextField { return false }
+                recorder.togglePause()
+                return true
+            }
+            return handled ? nil : event
+        }
     }
 
     @ViewBuilder private var banners: some View {
@@ -433,14 +457,19 @@ struct RecordView: View {
         VStack(spacing: 10) {
             HStack(spacing: 28) {
                 if recorder.isRecording {
+                    // Same footprint as the stop button (100pt ring, 84pt disc), neutral so it never reads as Stop.
                     Button { recorder.togglePause() } label: {
-                        GIcon(recorder.isPaused ? "play.fill" : "pause.fill", size: 16)
-                            .frame(width: 48, height: 48)
-                            .background(Circle().fill(G.surface2))
-                            .overlay(Circle().strokeBorder(G.borderStrong))
+                        ZStack {
+                            Circle().strokeBorder(G.borderStrong, lineWidth: 2).frame(width: 100, height: 100)
+                            Circle().fill(G.surface2).frame(width: 84, height: 84)
+                            GIcon(recorder.isPaused ? "play.fill" : "pause.fill", size: 30)
+                                .foregroundStyle(G.text)
+                        }
+                        .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .help(recorder.isPaused ? "Resume" : "Pause")
+                    .focusable(false)
+                    .help(recorder.isPaused ? "Resume (Space)" : "Pause (Space)")
                     .accessibilityLabel(recorder.isPaused ? "Resume recording" : "Pause recording")
                 }
                 Button(action: toggleRecording) {
@@ -456,8 +485,11 @@ struct RecordView: View {
                     .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut("r", modifiers: [.command])
-                .help(recorder.isRecording ? "Stop and transcribe (⌘R)" : "Start recording (⌘R)")
+                // Stop is click-only so a stray key can never end a call. ⌘R only starts a recording,
+                // and the button never takes keyboard focus, so Space or Return cannot press it either.
+                .focusable(false)
+                .keyboardShortcut(recorder.isRecording ? nil : KeyboardShortcut("r", modifiers: [.command]))
+                .help(recorder.isRecording ? "Stop and transcribe (click)" : "Start recording (⌘R)")
                 .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Start recording")
             }
             Text(recorder.isRecording ? "Stop and transcribe" : "Start recording")

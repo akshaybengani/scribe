@@ -14,7 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Inter and JetBrains Mono live in Contents/Resources/Fonts. Register them before the first view exists.
         GFont.registerBundled()
         buildMenu()
-        // No forced appearance: the window follows the system light or dark setting.
+        // Light, Dark, or System (follow macOS), chosen in Settings > Appearance.
+        AppTheme.current.apply()
         let root = ContentView()
             .environmentObject(store)
             .environmentObject(settings)
