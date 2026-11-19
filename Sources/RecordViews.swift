@@ -393,11 +393,25 @@ struct RecordView: View {
                         }
                         .disabled(recorder.isRecording)
                         .help("Turn off to record only what this Mac plays, for example a webinar.")
+                        if settings.captureMicrophone {
+                            HStack(alignment: .top, spacing: 12) {
+                                GCheckbox(isOn: $settings.echoCancellation).padding(.top, 1)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Remove speaker echo").font(GFont.ui(14, .semibold))
+                                    Text("Stops the microphone recording the call a second time from your speakers. Uses Apple's echo cancellation, like FaceTime.")
+                                        .font(GFont.ui(12)).foregroundStyle(G.text2).lineSpacing(2)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .onTapGesture { settings.echoCancellation.toggle() }
+                            }
+                            .padding(.leading, 28)
+                            .disabled(recorder.isRecording)
+                        }
                         HStack(alignment: .top, spacing: 12) {
                             GCheckbox(isOn: $settings.captureSystemAudio).padding(.top, 1)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Capture computer audio").font(GFont.ui(14, .semibold))
-                                Text(settings.captureMicrophone
+                                Text(settings.captureMicrophone && !settings.echoCancellation
                                      ? "Teams, Meet, or any app that plays sound. Use headphones so the microphone does not pick it up twice."
                                      : "Teams, Meet, or any app that plays sound.")
                                     .font(GFont.ui(12)).foregroundStyle(G.text2).lineSpacing(2)
@@ -611,7 +625,8 @@ struct RecordView: View {
             ui.pending = PendingRecording(id: id, url: url)
             Task {
                 if await recorder.start(to: url, withMic: settings.captureMicrophone,
-                                        withSystemAudio: settings.captureSystemAudio) == false {
+                                        withSystemAudio: settings.captureSystemAudio,
+                                        echoCancel: settings.echoCancellation) == false {
                     ui.pending = nil
                     store.delete(id)
                     if !recorder.micDenied && !recorder.screenDenied && recorder.errorMessage == nil { notice = "Could not start recording." }

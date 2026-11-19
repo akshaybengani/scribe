@@ -10,6 +10,7 @@ import Foundation
 ///   bytes uploaded. nil when the stage is indeterminate (show a spinner).
 struct JobProgress: Equatable, Sendable {
     enum Stage: String, Sendable {
+        case queued = "Waiting for another local transcription to finish"
         case preparing = "Preparing audio"
         case transcribing = "Transcribing"
         case uploading = "Uploading"

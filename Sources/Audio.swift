@@ -78,6 +78,23 @@ final class Meter: @unchecked Sendable {
     }
 }
 
+/// Channel 0 of a multichannel float buffer, as a mono buffer at the same sample rate.
+func firstChannel(_ buf: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+    guard let src = buf.floatChannelData,
+          let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: buf.format.sampleRate, channels: 1, interleaved: false),
+          let out = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: buf.frameLength),
+          let dst = out.floatChannelData else { return nil }
+    let n = Int(buf.frameLength)
+    if buf.format.isInterleaved {
+        let stride = Int(buf.format.channelCount)
+        for i in 0..<n { dst[0][i] = src[0][i * stride] }
+    } else {
+        dst[0].update(from: src[0], count: n)
+    }
+    out.frameLength = buf.frameLength
+    return out
+}
+
 final class PauseFlag: @unchecked Sendable {
     var paused = false
 }
@@ -289,7 +306,10 @@ final class Recorder: NSObject, ObservableObject {
     private var activeBefore: Double = 0
     private var activeSeconds: Double { activeBefore + (activeSince.map { Date().timeIntervalSince($0) } ?? 0) }
 
-    func start(to url: URL, withMic: Bool = true, withSystemAudio: Bool) async -> Bool {
+    /// True while the microphone runs through Apple's voice processing (echo cancellation).
+    @Published private(set) var echoCancelling = false
+
+    func start(to url: URL, withMic: Bool = true, withSystemAudio: Bool, echoCancel: Bool = true) async -> Bool {
         errorMessage = nil
         micDenied = false
         screenDenied = false
@@ -323,6 +343,22 @@ final class Recorder: NSObject, ObservableObject {
             let flag = self.flag, micMeter = self.micMeter, sysMeter = self.sysMeter
             if withMic {
                 let input = engine.inputNode
+                // Apple's voice processing (the FaceTime echo canceller) removes whatever this Mac plays,
+                // including other apps such as Teams, from the microphone, so speakers are not recorded twice.
+                // Measured on a MacBook Air: speaker bleed from another app fell from -14.5 to -48 dBFS.
+                echoCancelling = false
+                if echoCancel {
+                    do {
+                        try input.setVoiceProcessingEnabled(true)
+                        // Do not turn down the call's own audio while recording.
+                        input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
+                        echoCancelling = true
+                    } catch {
+                        errorMessage = "Echo cancellation could not start, so speaker sound may be recorded twice. Use headphones for this call."
+                    }
+                } else if input.isVoiceProcessingEnabled {
+                    try? input.setVoiceProcessingEnabled(false)
+                }
                 let inFormat = input.outputFormat(forBus: 0)
                 guard inFormat.sampleRate > 0 else {
                     errorMessage = "No microphone input is available."
@@ -332,7 +368,11 @@ final class Recorder: NSObject, ObservableObject {
 
                 // A plain tap on the input node. Do not connect the input to a mixer: that graph delivers
                 // digital silence. The engine has no output, so nothing is ever played back.
-                input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buf, _ in
+                // With voice processing the input has several channels: channel 0 is the cleaned voice, the
+                // rest are reference signals that still contain the speakers. Keep channel 0 only.
+                let cleanOnly = echoCancelling && inFormat.channelCount > 1
+                input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { raw, _ in
+                    guard let buf = cleanOnly ? firstChannel(raw) : raw else { return }
                     micMeter.update(buf)
                     if !flag.paused { mix.pushMic(buf) }
                 }
@@ -389,7 +429,8 @@ final class Recorder: NSObject, ObservableObject {
             let level = micMeter.take()
             if level > 0.001 { heardMic = true }
             // Exactly zero for the first seconds means the system is handing us silence, not a quiet room.
-            if !heardMic, elapsed > 4, errorMessage == nil {
+            // Voice processing also suppresses room noise, so allow longer before calling it silence.
+            if !heardMic, elapsed > (echoCancelling ? 15 : 4), errorMessage == nil {
                 errorMessage = "The microphone is delivering silence. Check System Settings, Privacy and Security, Microphone, that Scribe is switched on and that the right input device is chosen in Sound settings."
             }
             micLevels.append(level)
@@ -445,6 +486,7 @@ final class Recorder: NSObject, ObservableObject {
         writer = nil
         hasSystemAudio = false
         hasMic = false
+        echoCancelling = false
     }
 }
 

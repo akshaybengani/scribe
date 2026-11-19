@@ -203,6 +203,31 @@ enum Prompts {
 
 // MARK: - Local (whisper.cpp)
 
+/// Every output line of one whisper-cli run, filled from the reader thread.
+final class LineLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ line: String) { lock.lock(); lines.append(line); lock.unlock() }
+    var text: String { lock.lock(); defer { lock.unlock() }; return lines.joined(separator: "\n") }
+}
+
+/// Local whisper jobs run one at a time. Each loads a model of up to 1.6 GB onto the GPU, and two at
+/// once can make one fail partway through a long recording. Waiting jobs start in the order they came.
+actor LocalQueue {
+    static let shared = LocalQueue()
+    private var busy = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        guard busy else { busy = true; return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func release() {
+        if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() }
+    }
+}
+
 struct LocalTranscriber {
     let whisper: String
     let model: String
@@ -231,18 +256,34 @@ struct LocalTranscriber {
                     "--prompt", prompt, "-otxt", "-of", outBase, "-pp"]
         progress?.begin(.transcribing)
         let total = seconds
+        let log = LineLog()
+        // Written next to the audio when whisper-cli fails, so the cause is never lost with the screen.
+        let logFile = audio.deletingLastPathComponent().appendingPathComponent("whisper-error.log")
+        func saveLog(_ status: Int32) {
+            let head = "whisper-cli exited with status \(status) on \(Date())\nAudio: \(Int(seconds)) s, model: \(model)\n\n"
+            try? (head + log.text).write(to: logFile, atomically: true, encoding: .utf8)
+        }
         let r = try await Shell.runStreaming(whisper, args) { line in
+            log.append(line)
             guard let event = WhisperProgress.parse(line) else { return }
             switch event {
             case .percent(let n): progress?.transcribed(fraction: Double(n) / 100)
             case .reached(let t): if total > 0 { progress?.transcribed(fraction: min(0.99, t / total)) }
             }
         }
-        guard r.status == 0 else { throw TranscribeError.message("whisper-cli failed: \(r.tail)") }
-        progress?.transcribed(fraction: 1)
-        guard let text = try? String(contentsOfFile: outBase + ".txt", encoding: .utf8) else {
-            throw TranscribeError.message("whisper-cli produced no transcript.")
+        guard r.status == 0 else {
+            saveLog(r.status)
+            throw TranscribeError.message("whisper-cli failed (status \(r.status)). The full log is saved as whisper-error.log in this recording's folder. \(r.tail)")
         }
+        progress?.transcribed(fraction: 1)
+        // Decode leniently: whisper sometimes writes a broken UTF-8 byte (half a character) inside a
+        // hallucinated line, and a strict read would throw away an otherwise finished transcript.
+        guard let data = FileManager.default.contents(atPath: outBase + ".txt") else {
+            saveLog(r.status)
+            throw TranscribeError.message("whisper-cli produced no transcript. The full log is saved as whisper-error.log in this recording's folder.")
+        }
+        try? FileManager.default.removeItem(at: logFile)
+        let text = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\u{FFFD}", with: "")
         return tidy(text)
     }
 }
@@ -737,9 +778,18 @@ enum Engine {
         let english = language == .english
         switch kind {
         case .local:
-            return try await LocalTranscriber(whisper: cfg.whisperPath, model: cfg.localPath(language),
-                                              language: cfg.language, hint: cfg.hint, english: english)
-                .transcribe(audio: audio, context: "", progress: progress)
+            progress?.begin(.queued)
+            await LocalQueue.shared.acquire()
+            do {
+                let text = try await LocalTranscriber(whisper: cfg.whisperPath, model: cfg.localPath(language),
+                                                      language: cfg.language, hint: cfg.hint, english: english)
+                    .transcribe(audio: audio, context: "", progress: progress)
+                await LocalQueue.shared.release()
+                return text
+            } catch {
+                await LocalQueue.shared.release()
+                throw error
+            }
         case .gemini:
             return try await GeminiTranscriber(key: cfg.geminiKey, model: cfg.geminiModel, style: cfg.style, english: english,
                                                speakerLabels: speakerLabels)
@@ -806,6 +856,10 @@ final class JobRunner: ObservableObject {
             }
         }
         Task {
+            // Keep the Mac from idle-sleeping mid-job: a long local transcription runs for many minutes.
+            let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated],
+                                                                 reason: "Transcribing a recording")
+            defer { ProcessInfo.processInfo.endActivity(activity) }
             do {
                 let text = try await Engine.run(kind, audio: audio, existing: existing, cfg: cfg, language: language,
                                                 speakerLabels: labels, progress: reporter)
