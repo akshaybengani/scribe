@@ -284,7 +284,8 @@ struct LocalTranscriber {
         }
         try? FileManager.default.removeItem(at: logFile)
         let text = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\u{FFFD}", with: "")
-        return tidy(text)
+        // Drop whisper's hallucinated lines (Korean, Japanese, Arabic... in a Hindi and English call).
+        return tidy(TranscriptCleanup.clean(text).text)
     }
 }
 
