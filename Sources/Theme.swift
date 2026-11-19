@@ -592,14 +592,14 @@ struct LaneWell: View {
             let fit = max(1, Int((size.width - inset * 2) / step))
             let maxH = size.height - 24
 
-            func draw(_ heights: [CGFloat], alignRight: Bool, hot: Int) {
+            // Every bar takes the lane colour while recording; all grey while paused or idle.
+            func draw(_ heights: [CGFloat], alignRight: Bool, lit: Bool) {
                 let total = CGFloat(heights.count) * step - gap
                 var x = alignRight ? size.width - inset - total : inset
-                for (i, h) in heights.enumerated() {
+                for h in heights {
                     let height = max(4, h)
                     let rect = CGRect(x: x, y: (size.height - height) / 2, width: barW, height: height)
-                    let isHot = active && i >= heights.count - hot
-                    ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(isHot ? tint : G.bar))
+                    ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(lit ? tint : G.bar))
                     x += step
                 }
             }
@@ -610,10 +610,10 @@ struct LaneWell: View {
                         + 0.25 * abs(sin(Double(i) * 1.9 + idleSeed))
                     return CGFloat(v) * 12
                 }
-                draw(heights, alignRight: false, hot: 0)
+                draw(heights, alignRight: false, lit: false)
             } else {
                 let shown = levels.suffix(fit)
-                draw(shown.map { CGFloat(min(1, max(0, $0))) * maxH }, alignRight: true, hot: 14)
+                draw(shown.map { CGFloat(min(1, max(0, $0))) * maxH }, alignRight: true, lit: active)
             }
         }
         .frame(height: 72)

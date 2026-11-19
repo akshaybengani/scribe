@@ -97,6 +97,8 @@ final class AppSettings: ObservableObject {
 
     @Published var primary: ProviderKind { didSet { d.set(primary.rawValue, forKey: "primary") } }
     @Published var captureSystemAudio: Bool { didSet { d.set(captureSystemAudio, forKey: "captureSystemAudio") } }
+    /// Off records computer audio only (for example a webinar). On by default.
+    @Published var captureMicrophone: Bool { didSet { d.set(captureMicrophone, forKey: "captureMicrophone") } }
 
     @Published var whisperPath: String { didSet { d.set(whisperPath, forKey: "whisperPath") } }
     @Published var localModelPath: String { didSet { d.set(localModelPath, forKey: "localModelPath") } }
@@ -164,6 +166,7 @@ final class AppSettings: ObservableObject {
         Self.migrateModelDefaults(defaults)
         primary = ProviderKind(rawValue: d.string(forKey: "primary") ?? "") ?? .local
         captureSystemAudio = d.bool(forKey: "captureSystemAudio")
+        captureMicrophone = d.object(forKey: "captureMicrophone") as? Bool ?? true
         let detected = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
             .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/whisper-cli"
         whisperPath = d.string(forKey: "whisperPath") ?? detected

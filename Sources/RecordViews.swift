@@ -241,7 +241,20 @@ struct RecordView: View {
 
     private var issue: String? { settings.issue(for: settings.primary) }
     private var offline: Bool { settings.primary.isCloud && !network.isOnline }
+    /// The sources this recording uses: the live ones while recording, the chosen ones before.
+    private var usesMic: Bool { recorder.isRecording ? recorder.hasMic : settings.captureMicrophone }
+    private var usesSystem: Bool { recorder.isRecording ? recorder.hasSystemAudio : settings.captureSystemAudio }
+    private var noSource: Bool { !settings.captureMicrophone && !settings.captureSystemAudio }
+    private var sourcesLine: String {
+        switch (usesMic, usesSystem) {
+        case (true, true): return "Microphone and computer audio"
+        case (false, true): return "Computer audio"
+        default: return "Microphone"
+        }
+    }
+
     private var micBlocked: Bool {
+        guard usesMic else { return false }
         if recorder.micDenied { return true }
         let s = AVCaptureDevice.authorizationStatus(for: .audio)
         return s == .denied || s == .restricted
@@ -255,12 +268,18 @@ struct RecordView: View {
         }
     }
 
+    private var recordingPillText: String {
+        if !recorder.hasMic { return "Recording, computer audio only" }
+        return recorder.hasSystemAudio || !settings.captureSystemAudio ? "Recording" : "Recording, microphone only"
+    }
+
     private var pill: AnyView {
         if recorder.isRecording {
             return AnyView(recorder.isPaused
                 ? StatusPill(kind: .neutral, text: "Paused", icon: "pause.fill")
-                : StatusPill(kind: .ready, text: recorder.hasSystemAudio || !settings.captureSystemAudio ? "Recording" : "Recording, microphone only", icon: "circle.fill"))
+                : StatusPill(kind: .ready, text: recordingPillText, icon: "circle.fill"))
         }
+        if noSource { return AnyView(StatusPill(kind: .warn, text: "No source on")) }
         if micBlocked { return AnyView(StatusPill(kind: .bad, text: "Microphone off")) }
         if offline { return AnyView(StatusPill(kind: .warn, text: "Offline", icon: "wifi.slash")) }
         if let issue {
@@ -355,24 +374,32 @@ struct RecordView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     SectionLabel("Sources")
                     VStack(alignment: .leading, spacing: 14) {
-                        HStack(spacing: 10) {
-                            GIcon("mic", size: 15).foregroundStyle(G.accentText)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Microphone").font(GFont.ui(14, .semibold))
-                                Text("Default input").font(GFont.ui(12)).foregroundStyle(G.text2)
+                        HStack(alignment: .top, spacing: 12) {
+                            GCheckbox(isOn: $settings.captureMicrophone).padding(.top, 1)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Capture microphone").font(GFont.ui(14, .semibold))
+                                Text(settings.captureMicrophone ? "Default input" : "Off: only computer audio is recorded.")
+                                    .font(GFont.ui(12)).foregroundStyle(G.text2)
                             }
+                            .onTapGesture { settings.captureMicrophone.toggle() }
                             Spacer()
-                            HStack(spacing: 5) {
-                                GIcon(micStatus.ok ? "checkmark" : "exclamationmark.triangle.fill", size: 11, weight: .bold)
-                                Text(micStatus.text).font(GFont.ui(12, .semibold))
+                            if settings.captureMicrophone {
+                                HStack(spacing: 5) {
+                                    GIcon(micStatus.ok ? "checkmark" : "exclamationmark.triangle.fill", size: 11, weight: .bold)
+                                    Text(micStatus.text).font(GFont.ui(12, .semibold))
+                                }
+                                .foregroundStyle(micStatus.ok ? G.success : G.warnIcon)
                             }
-                            .foregroundStyle(micStatus.ok ? G.success : G.warnIcon)
                         }
+                        .disabled(recorder.isRecording)
+                        .help("Turn off to record only what this Mac plays, for example a webinar.")
                         HStack(alignment: .top, spacing: 12) {
                             GCheckbox(isOn: $settings.captureSystemAudio).padding(.top, 1)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Also capture computer audio").font(GFont.ui(14, .semibold))
-                                Text("Teams, Meet, or any app that plays sound. Use headphones so the microphone does not pick it up twice.")
+                                Text("Capture computer audio").font(GFont.ui(14, .semibold))
+                                Text(settings.captureMicrophone
+                                     ? "Teams, Meet, or any app that plays sound. Use headphones so the microphone does not pick it up twice."
+                                     : "Teams, Meet, or any app that plays sound.")
                                     .font(GFont.ui(12)).foregroundStyle(G.text2).lineSpacing(2)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -380,6 +407,13 @@ struct RecordView: View {
                         }
                         .disabled(recorder.isRecording)
                         .help("Captures everything this Mac plays. Use headphones so the microphone does not pick up the speakers a second time.")
+                        if noSource && !recorder.isRecording {
+                            HStack(spacing: 6) {
+                                GIcon("exclamationmark.triangle.fill", size: 11)
+                                Text("Both sources are off. Turn on at least one to record.")
+                            }
+                            .font(GFont.ui(12, .semibold)).foregroundStyle(G.warnIcon)
+                        }
                     }
                     .padding(12)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(G.surface2))
@@ -403,7 +437,7 @@ struct RecordView: View {
                     }
                     .font(GFont.ui(13)).foregroundStyle(G.text2)
                     Spacer()
-                    Text(settings.callLanguage.title + (recorder.isRecording && !settings.captureSystemAudio ? ", microphone only" : ""))
+                    Text(settings.callLanguage.title + (recorder.isRecording && !(usesMic && usesSystem) ? ", \(sourcesLine.lowercased()) only" : ""))
                         .font(GFont.ui(13)).foregroundStyle(G.text2)
                 }
                 Text(clockString(recorder.elapsed))
@@ -413,12 +447,18 @@ struct RecordView: View {
                     .frame(maxWidth: .infinity)
                     .accessibilityLabel("Elapsed time \(formatTime(recorder.elapsed))")
                 let live = recorder.isRecording && !recorder.isPaused
-                CaptureLane(title: "Microphone", icon: "mic", iconColor: G.accentText,
-                            state: laneState, levels: recorder.micLevels, active: live, tint: G.accent, seed: 1.3)
-                if recorder.hasSystemAudio || (!recorder.isRecording && settings.captureSystemAudio) {
+                if usesMic {
+                    CaptureLane(title: "Microphone", icon: "mic", iconColor: G.accentText,
+                                state: laneState, levels: recorder.micLevels, active: live, tint: G.accent, seed: 1.3)
+                } else if recorder.isRecording {
+                    Text("Microphone is off for this recording. Only computer audio is captured.")
+                        .font(GFont.ui(12)).foregroundStyle(G.text3).multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
+                if usesSystem {
                     CaptureLane(title: "Computer audio", icon: "display", iconColor: G.blue,
                                 state: laneState, levels: recorder.systemLevels, active: live, tint: G.blue, seed: 4.1)
-                } else if recorder.isRecording && !settings.captureSystemAudio {
+                } else if recorder.isRecording {
                     Text("Computer audio is off for this recording. Turn it on before you start to capture Teams, Meet or any app that plays sound.")
                         .font(GFont.ui(12)).foregroundStyle(G.text3).multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
@@ -489,10 +529,13 @@ struct RecordView: View {
                 // and the button never takes keyboard focus, so Space or Return cannot press it either.
                 .focusable(false)
                 .keyboardShortcut(recorder.isRecording ? nil : KeyboardShortcut("r", modifiers: [.command]))
-                .help(recorder.isRecording ? "Stop and transcribe (click)" : "Start recording (⌘R)")
+                .disabled(!recorder.isRecording && noSource)
+                .opacity(!recorder.isRecording && noSource ? 0.4 : 1)
+                .help(recorder.isRecording ? "Stop and transcribe (click)"
+                      : (noSource ? "Turn on the microphone or computer audio first" : "Start recording (⌘R)"))
                 .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Start recording")
             }
-            Text(recorder.isRecording ? "Stop and transcribe" : "Start recording")
+            Text(recorder.isRecording ? "Stop and transcribe" : (noSource ? "Turn on a source to record" : "Start recording"))
                 .font(GFont.ui(13, .medium)).foregroundStyle(G.text2)
             Button { ui.section = .importAudio } label: { IconLabel("Import audio file", "square.and.arrow.down") }
                 .buttonStyle(.g(.secondary, height: 36))
@@ -515,7 +558,9 @@ struct RecordView: View {
             }
             if recorder.screenDenied {
                 PermissionCard(title: "Computer audio needs permission",
-                               text: "Scribe does not have Screen & System Audio Recording access, so this recording falls back to the microphone only.",
+                               text: settings.captureMicrophone
+                                   ? "Scribe does not have Screen & System Audio Recording access, so this recording falls back to the microphone only."
+                                   : "Scribe does not have Screen & System Audio Recording access, and the microphone is off, so recording cannot start.",
                                steps: ["Open System Settings, then Privacy & Security.",
                                        "Choose Screen & System Audio Recording and switch Scribe on.",
                                        "Quit and reopen Scribe, then record again."],
@@ -545,7 +590,7 @@ struct RecordView: View {
     private func toggleRecording() {
         notice = nil
         if recorder.isRecording {
-            let withSystem = recorder.hasSystemAudio
+            let sources = sourcesLine
             Task {
                 let duration = await recorder.stop()
                 guard let p = ui.pending else { return }
@@ -557,7 +602,7 @@ struct RecordView: View {
                 // Do not transcribe yet: during a call people often do not know which language is being
                 // used, so the next screen asks, and transcription starts only when they confirm.
                 ui.justSaved = SavedRecording(id: rec.id, provider: kind,
-                                              sources: withSystem ? "Microphone and computer audio" : "Microphone")
+                                              sources: sources)
             }
         } else {
             ui.justSaved = nil
@@ -565,7 +610,8 @@ struct RecordView: View {
             let url = store.newAudioURL(id: id, ext: "m4a")
             ui.pending = PendingRecording(id: id, url: url)
             Task {
-                if await recorder.start(to: url, withSystemAudio: settings.captureSystemAudio) == false {
+                if await recorder.start(to: url, withMic: settings.captureMicrophone,
+                                        withSystemAudio: settings.captureSystemAudio) == false {
                     ui.pending = nil
                     store.delete(id)
                     if !recorder.micDenied && !recorder.screenDenied && recorder.errorMessage == nil { notice = "Could not start recording." }

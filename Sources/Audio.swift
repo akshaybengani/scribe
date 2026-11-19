@@ -99,8 +99,15 @@ final class MonoMixer: @unchecked Sendable {
     private var micIn: AVAudioFormat?
     private var sysConv: AVAudioConverter?
     private var sysIn: AVAudioFormat?
+    /// No microphone: computer audio is written as it arrives, and `padSilence` keeps the clock.
+    private let systemOnly: Bool
+    /// Samples written so far. Only read in system-only mode, where every write holds `lock`.
+    private var written = 0
 
-    init(writer: AACWriter) { self.writer = writer }
+    init(writer: AACWriter, systemOnly: Bool = false) {
+        self.writer = writer
+        self.systemOnly = systemOnly
+    }
 
     func pushMic(_ buf: AVAudioPCMBuffer) {
         guard let samples = Self.mono16k(buf, to: target, conv: &micConv, last: &micIn), !samples.isEmpty else { return }
@@ -118,8 +125,23 @@ final class MonoMixer: @unchecked Sendable {
     func pushSystem(_ buf: AVAudioPCMBuffer) {
         guard let samples = Self.mono16k(buf, to: target, conv: &sysConv, last: &sysIn), !samples.isEmpty else { return }
         lock.lock()
+        if systemOnly {
+            write(samples)
+            lock.unlock()
+            return
+        }
         system.append(contentsOf: samples)
         if system.count > maxQueued { system.removeFirst(system.count - maxQueued) }
+        lock.unlock()
+    }
+
+    /// System-only mode: computer audio may send nothing while the Mac is silent. Writes silence up to
+    /// `seconds` of recorded (unpaused) time, so the file keeps real time and the timer keeps moving.
+    func padSilence(toSeconds seconds: Double) {
+        guard systemOnly else { return }
+        lock.lock()
+        let missing = min(Int(seconds * 16_000) - written, 16_000 * 5)
+        if missing > 0 { write([Float](repeating: 0, count: missing)) }
         lock.unlock()
     }
 
@@ -129,6 +151,7 @@ final class MonoMixer: @unchecked Sendable {
         for i in 0..<samples.count { dst[i] = max(-1, min(1, samples[i])) }
         buf.frameLength = AVAudioFrameCount(samples.count)
         writer.write(buf)
+        written += samples.count
     }
 
     /// Converts any buffer to 16 kHz mono float samples. Each source keeps its own converter.
@@ -244,6 +267,8 @@ final class Recorder: NSObject, ObservableObject {
     @Published private(set) var systemLevels: [Float] = []
     @Published private(set) var elapsed: Double = 0
     @Published private(set) var hasSystemAudio = false
+    /// False for a computer-audio-only recording.
+    @Published private(set) var hasMic = false
     @Published var micDenied = false
     @Published var screenDenied = false
     @Published var errorMessage: String?
@@ -258,14 +283,25 @@ final class Recorder: NSObject, ObservableObject {
     private let sysMeter = Meter()
     private let flag = PauseFlag()
     private let maxLevels = 600
+    private var micTapInstalled = false
+    /// Unpaused recording time, for padding a computer-audio-only file with silence.
+    private var activeSince: Date?
+    private var activeBefore: Double = 0
+    private var activeSeconds: Double { activeBefore + (activeSince.map { Date().timeIntervalSince($0) } ?? 0) }
 
-    func start(to url: URL, withSystemAudio: Bool) async -> Bool {
+    func start(to url: URL, withMic: Bool = true, withSystemAudio: Bool) async -> Bool {
         errorMessage = nil
         micDenied = false
         screenDenied = false
-        guard await AVCaptureDevice.requestAccess(for: .audio) else {
-            micDenied = true
+        guard withMic || withSystemAudio else {
+            errorMessage = "Turn on the microphone or computer audio to record."
             return false
+        }
+        if withMic {
+            guard await AVCaptureDevice.requestAccess(for: .audio) else {
+                micDenied = true
+                return false
+            }
         }
         if withSystemAudio && !CGPreflightScreenCaptureAccess() {
             _ = CGRequestScreenCaptureAccess()
@@ -281,26 +317,30 @@ final class Recorder: NSObject, ObservableObject {
             let w = try AACWriter(url: url)
             writer = w
 
-            let mix = MonoMixer(writer: w)
+            let mix = MonoMixer(writer: w, systemOnly: !withMic)
             mixer = mix
             heardMic = false
-            let input = engine.inputNode
-            let inFormat = input.outputFormat(forBus: 0)
-            guard inFormat.sampleRate > 0 else {
-                errorMessage = "No microphone input is available."
-                cleanup()
-                return false
-            }
-
-            // A plain tap on the input node. Do not connect the input to a mixer: that graph delivers
-            // digital silence. The engine has no output, so nothing is ever played back.
             let flag = self.flag, micMeter = self.micMeter, sysMeter = self.sysMeter
-            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buf, _ in
-                micMeter.update(buf)
-                if !flag.paused { mix.pushMic(buf) }
+            if withMic {
+                let input = engine.inputNode
+                let inFormat = input.outputFormat(forBus: 0)
+                guard inFormat.sampleRate > 0 else {
+                    errorMessage = "No microphone input is available."
+                    cleanup()
+                    return false
+                }
+
+                // A plain tap on the input node. Do not connect the input to a mixer: that graph delivers
+                // digital silence. The engine has no output, so nothing is ever played back.
+                input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buf, _ in
+                    micMeter.update(buf)
+                    if !flag.paused { mix.pushMic(buf) }
+                }
+                micTapInstalled = true
+                engine.prepare()
+                try engine.start()
             }
-            engine.prepare()
-            try engine.start()
+            hasMic = withMic
 
             if withSystemAudio {
                 let cap = SystemAudioCapture(state: flag) { buf in
@@ -315,6 +355,13 @@ final class Recorder: NSObject, ObservableObject {
                     capture = cap
                     hasSystemAudio = true
                 } catch {
+                    // Without the microphone there is nothing left to record.
+                    if !withMic {
+                        errorMessage = "Computer audio could not start (\(error.localizedDescription))."
+                        screenDenied = true
+                        cleanup()
+                        return false
+                    }
                     // Mic-only is still useful; say so instead of failing the whole recording.
                     errorMessage = "Computer audio could not start (\(error.localizedDescription)). Recording the microphone only."
                     screenDenied = true
@@ -328,6 +375,8 @@ final class Recorder: NSObject, ObservableObject {
 
         isRecording = true
         isPaused = false
+        activeBefore = 0
+        activeSince = Date()
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -336,14 +385,19 @@ final class Recorder: NSObject, ObservableObject {
 
     private func tick() {
         guard isRecording, !isPaused else { return }
-        let level = micMeter.take()
-        if level > 0.001 { heardMic = true }
-        // Exactly zero for the first seconds means the system is handing us silence, not a quiet room.
-        if !heardMic, elapsed > 4, errorMessage == nil {
-            errorMessage = "The microphone is delivering silence. Check System Settings, Privacy and Security, Microphone, that Scribe is switched on and that the right input device is chosen in Sound settings."
+        if hasMic {
+            let level = micMeter.take()
+            if level > 0.001 { heardMic = true }
+            // Exactly zero for the first seconds means the system is handing us silence, not a quiet room.
+            if !heardMic, elapsed > 4, errorMessage == nil {
+                errorMessage = "The microphone is delivering silence. Check System Settings, Privacy and Security, Microphone, that Scribe is switched on and that the right input device is chosen in Sound settings."
+            }
+            micLevels.append(level)
+            if micLevels.count > maxLevels { micLevels.removeFirst(micLevels.count - maxLevels) }
+        } else {
+            // Half a second of slack so real computer audio that is still on its way is never overwritten.
+            mixer?.padSilence(toSeconds: activeSeconds - 0.5)
         }
-        micLevels.append(level)
-        if micLevels.count > maxLevels { micLevels.removeFirst(micLevels.count - maxLevels) }
         if hasSystemAudio {
             systemLevels.append(sysMeter.take())
             if systemLevels.count > maxLevels { systemLevels.removeFirst(systemLevels.count - maxLevels) }
@@ -355,6 +409,12 @@ final class Recorder: NSObject, ObservableObject {
         guard isRecording else { return }
         isPaused.toggle()
         flag.paused = isPaused
+        if isPaused {
+            activeBefore = activeSeconds
+            activeSince = nil
+        } else {
+            activeSince = Date()
+        }
     }
 
     /// Stops and returns the recorded length in seconds.
@@ -376,12 +436,15 @@ final class Recorder: NSObject, ObservableObject {
     }
 
     private func cleanup() {
-        engine.inputNode.removeTap(onBus: 0)
+        if micTapInstalled { engine.inputNode.removeTap(onBus: 0) }
+        micTapInstalled = false
         if engine.isRunning { engine.stop() }
+        activeSince = nil
         mixer = nil
         writer?.finish()
         writer = nil
         hasSystemAudio = false
+        hasMic = false
     }
 }
 

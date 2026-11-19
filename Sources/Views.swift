@@ -244,7 +244,7 @@ struct SetupItems {
         var n = 0
         if !whisperOK { n += 1 }
         if !modelOK { n += 1 }
-        if micDenied { n += 1 }
+        if micDenied && settings.captureMicrophone { n += 1 }
         if settings.captureSystemAudio && !screenOK { n += 1 }
         return n
     }
@@ -277,7 +277,7 @@ struct SetupView: View {
                     row(icon: "mic", title: "Microphone permission",
                         detail: items.micDenied ? "Microphone access is off. Allow Scribe in System Settings."
                             : (items.micStatus == .authorized ? "Scribe can use the microphone." : "Scribe will ask the first time you record."),
-                        state: items.micDenied ? .attention : (items.micStatus == .authorized ? .ok : .optional),
+                        state: items.micDenied ? (settings.captureMicrophone ? .attention : .optional) : (items.micStatus == .authorized ? .ok : .optional),
                         button: "Open System Settings") { openPrivacy("Privacy_Microphone") }
                     row(icon: "display", title: "Computer audio permission",
                         detail: items.screenOK ? "Scribe can capture computer audio."
