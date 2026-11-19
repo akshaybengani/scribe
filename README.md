@@ -113,11 +113,13 @@ What the privacy costs:
 
 ## What it does
 
-- **Record** the microphone, optionally with computer audio (Teams, Meet, browser calls) through ScreenCaptureKit, mixed into one 16 kHz mono AAC file. Pause and resume with the large button or Space. Stop is click-only, so a stray key can't end a call.
+- **Record** the microphone, computer audio (Teams, Meet, browser calls, through ScreenCaptureKit), or both, mixed into one 16 kHz mono AAC file. Turn the microphone off to record only what the Mac plays, for example a webinar. Pause and resume with the large button or Space. Stop is click-only, so a stray key can't end a call.
+- **Remove speaker echo** (on by default): the microphone runs through Apple's on-device voice processing, the echo canceller FaceTime uses, so a call played on the Mac's speakers isn't recorded a second time by the mic. Only the cleaned voice channel is kept. Measured on a MacBook Air, speaker sound from another app in the mic fell from -14.5 to -48 dBFS.
 - **Import** any audio file. It's copied into the library and the original is left alone.
 - **Choose a call language** per recording: Hindi + English, or English only (a separate model file and prompt, large-v3-turbo at 5-bit by default).
 - **Transcribe** with Local (whisper.cpp), Gemini, or ElevenLabs Scribe. Claude reviews existing transcripts as text only.
 - **Long recordings:** Gemini and ElevenLabs get recordings over 60 minutes in parts of about 25 minutes (29 minutes for Gemini with speaker labels), cut at the quietest point and stitched in order. Failed parts retry. A job screen shows percent, elapsed, time left, and chunk x of y.
+- **Local jobs run one at a time**, so two copies of a large model never share the GPU. Others wait with "Waiting for another local transcription to finish". The Mac stays awake while a job runs (closing the lid still pauses it). If whisper-cli fails, its full output is saved as `whisper-error.log` in the recording's folder.
 - **Search** every title, folder, and transcript from the bar at the top (Cmd+K), then find within a transcript.
 - **Speaker labels** appear only when a provider returns them (ElevenLabs and Gemini 3.5 Transcribe). Nothing extra is added otherwise.
 - **Pick models from each provider's own list** once a key exists, audio models first. The names load from the provider's list-models API.
@@ -141,6 +143,10 @@ What the privacy costs:
 | Live microphone and computer audio capture, drag and drop | Built, not yet exercised |
 | Claude Code MCP server (`scribe-mcp`) | Built. All five tools checked by hand against a real library, and connected in Claude Code. |
 | Settings > Appearance, Settings > Claude Code, Space to pause a recording, click-only Stop | Built, not yet exercised |
+| Computer-audio-only recording (microphone off) | Built, not yet exercised |
+| Remove speaker echo | Built. The echo canceller was measured outside the app (below); recording with it in the app is not yet exercised. |
+| Local job queue, keep awake during jobs, whisper-error.log | Built, not yet exercised |
+| Lenient read of whisper-cli output | Built and checked on the 75 minute call that failed before (see Tests) |
 | Confirmation before every cloud send | Not built (see the gap above) |
 | Local chunking, compare-opinions view, Windows | Not built |
 
@@ -267,6 +273,8 @@ There's no automated test suite yet. What was checked by hand in the build sessi
 | English-only path | A 30 second slice, with large-v3 at full precision |
 | UI snapshots | Light mode, of the earlier UI |
 | Claude Code MCP server | All five tools, unknown ids, missing transcripts, and bad requests, over stdio against a real library |
+| Long local transcription | A 75 minute Hinglish call that failed in the app: whisper-cli itself finished in 14 minutes (2.7 GB peak). Its output held one broken UTF-8 byte inside a hallucinated line, which made the app's strict read discard the whole transcript. The lenient read keeps all of it. |
+| Echo cancellation | MacBook Air mic and speakers, speech played by another app for 6 seconds: -14.5 dBFS in the mic without voice processing, -48.1 dBFS with it |
 
 Those runs predate the progress output, the new English default, chunking, search, export, model lists, and the Graphite redesign, so the SRS counts those as built but untested.
 
