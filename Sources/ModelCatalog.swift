@@ -125,6 +125,10 @@ enum ModelCatalog {
                           note: "Text only. Default for note review."),
                 ModelInfo(id: "claude-haiku-5-5", displayName: "Claude Haiku 5.5", supportsAudio: false, note: "Text only. Fastest."),
             ]
+        case .claudeCode:
+            return NotesEngineKind.claudeCodeModels.map {
+                ModelInfo(id: $0.id, displayName: $0.name, supportsAudio: false, note: "Text only. Claude Code picks the current version.")
+            }
         }
     }
 
@@ -135,6 +139,7 @@ enum ModelCatalog {
         case .gemini: return "gemini-3.5-transcribe"
         case .elevenlabs: return "scribe_v2"
         case .claude: return "claude-sonnet-5-5"
+        case .claudeCode: return "opus"
         }
     }
 
@@ -230,7 +235,7 @@ enum ModelCatalog {
         // known non-transcription family are flagged.
         case .gemini: audio = !geminiExcluded(id)
         case .elevenlabs: audio = !id.hasPrefix("eleven_") && !id.contains("realtime") && !id.contains("_live")
-        case .claude, .local: audio = false
+        case .claude, .claudeCode, .local: audio = false
         }
         return ModelInfo(id: id, displayName: id, supportsAudio: audio, note: "Custom name, not in the list.")
     }
@@ -242,7 +247,7 @@ enum ModelCatalog {
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw ModelCatalogError.noKey }
         switch kind {
-        case .local: throw ModelCatalogError.unsupported
+        case .local, .claudeCode: throw ModelCatalogError.unsupported
         case .gemini: return sorted(try await fetchGemini(key: key, session: session))
         case .elevenlabs:
             let fetched = try await fetchElevenLabs(key: key, session: session)

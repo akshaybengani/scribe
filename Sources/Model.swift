@@ -2,9 +2,10 @@ import Foundation
 import AVFoundation
 
 /// Who can produce a transcript. Claude is text-only: it reads existing
-/// transcripts and returns a reviewed one, because it cannot take audio.
+/// transcripts and returns a reviewed one, because it cannot take audio. Claude Code does the same
+/// review through the Claude Code command line, on the user's Claude subscription instead of an API key.
 enum ProviderKind: String, Codable, CaseIterable, Identifiable {
-    case local, gemini, elevenlabs, claude
+    case local, gemini, elevenlabs, claude, claudeCode
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "Gemini"
         case .elevenlabs: return "ElevenLabs"
         case .claude: return "Claude"
+        case .claudeCode: return "Claude Code"
         }
     }
 
@@ -23,6 +25,7 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable {
         case .gemini: return "Google Gemini"
         case .elevenlabs: return "ElevenLabs Scribe"
         case .claude: return "Anthropic Claude (text review)"
+        case .claudeCode: return "Claude Code (text review, subscription)"
         }
     }
 
@@ -31,13 +34,13 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable {
         case .local: return "this Mac"
         case .gemini: return "Google"
         case .elevenlabs: return "ElevenLabs"
-        case .claude: return "Anthropic"
+        case .claude, .claudeCode: return "Anthropic"
         }
     }
 
     var isCloud: Bool { self != .local }
     /// Claude only reads text, so it can never be the first transcriber.
-    var hearsAudio: Bool { self != .claude }
+    var hearsAudio: Bool { self != .claude && self != .claudeCode }
 }
 
 /// What the speakers use. English-only calls use English-specific models and prompts;
@@ -84,8 +87,33 @@ struct Recording: Codable, Identifiable, Equatable {
     var language: CallLanguage?
     /// nil = top level. Optional so recordings saved before folders existed still load.
     var folderID: String?
+    /// Meeting notes written from a transcript. Optional so older recordings still load.
+    var notes: MeetingNotes?
 
     var callLanguage: CallLanguage { language ?? .mixed }
+}
+
+/// Who writes meeting notes. Ollama runs on this Mac; Claude reads the transcript text at Anthropic,
+/// through the Claude Code sign-in on this Mac.
+enum NotesEngineKind: String, Codable, CaseIterable, Identifiable {
+    case ollama, claude
+    var id: String { rawValue }
+    var title: String { self == .ollama ? "Local (Ollama)" : "Claude Code" }
+    var isCloud: Bool { self == .claude }
+
+    /// Claude Code model names. Claude Code turns each into its current model.
+    static let claudeCodeModels: [(id: String, name: String)] = [("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")]
+}
+
+/// Notes for one recording, in Markdown. Regenerating replaces them.
+struct MeetingNotes: Codable, Equatable {
+    var engine: NotesEngineKind
+    var model: String
+    /// The transcript tab the notes were written from.
+    var source: ProviderKind
+    var text: String
+    var date: Date
+    var seconds: Double
 }
 
 /// One folder per recording under Application Support/Scribe/Recordings/<id>/
@@ -281,6 +309,10 @@ final class RecordingStore: ObservableObject {
             r.results.removeAll { $0.provider == result.provider }
             r.results.append(result)
         }
+    }
+
+    func setNotes(_ notes: MeetingNotes?, for id: String) {
+        mutate(id) { $0.notes = notes }
     }
 
     func delete(_ id: String) {

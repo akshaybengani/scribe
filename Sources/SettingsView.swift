@@ -6,12 +6,13 @@ struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var ui: UIState
 
-    private enum Top: Hashable { case models, output, appearance, claudeCode, storage }
+    private enum Top: Hashable { case models, output, notes, appearance, claudeCode, storage }
 
     private var top: Top {
         switch ui.settingsPage {
         case .models, .local, .cloud: return .models
         case .output: return .output
+        case .notes: return .notes
         case .appearance: return .appearance
         case .claudeCode: return .claudeCode
         case .storage: return .storage
@@ -29,6 +30,7 @@ struct SettingsView: View {
                 VStack(spacing: 2) {
                     navItem("AI Models", "cpu", on: top == .models) { ui.settingsPage = .models }
                     navItem("Output", "doc.text", on: top == .output) { ui.settingsPage = .output }
+                    navItem("Meeting notes", "list.bullet.rectangle", on: top == .notes) { ui.settingsPage = .notes }
                     navItem("Appearance", "circle.lefthalf.filled", on: top == .appearance) { ui.settingsPage = .appearance }
                     navItem("Claude Code", "terminal", on: top == .claudeCode) { ui.settingsPage = .claudeCode }
                     navItem("Storage and privacy", "lock.shield", on: top == .storage) { ui.settingsPage = .storage }
@@ -52,6 +54,7 @@ struct SettingsView: View {
         case .local: LocalModelPage()
         case .cloud(let k): CloudProviderPage(kind: k).id(k)
         case .output: OutputPage()
+        case .notes: NotesSettingsPage()
         case .appearance: AppearancePage()
         case .claudeCode: ClaudeCodePage()
         case .storage: StoragePage()
@@ -143,7 +146,7 @@ private struct ModelsOverviewPage: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 PageTitle(title: "AI Models")
-                Text("Each provider shows whether it is ready. Cloud providers need an API key, which is kept in your Keychain.")
+                Text("Each provider shows whether it is ready. Cloud providers need an API key, which is kept in your Keychain. Claude Code uses your Claude Code sign-in instead.")
                     .font(GFont.ui(14)).foregroundStyle(G.text2).lineSpacing(3)
             }
             .padding(.bottom, 4)
@@ -164,6 +167,7 @@ private struct ModelsOverviewPage: View {
         case .local: caption = "Private: audio never leaves this Mac and no internet is needed."
         case .gemini, .elevenlabs: caption = "Audio is uploaded to \(k.company)."
         case .claude: caption = "Reads transcripts you already have. Only the text is sent to Anthropic."
+        case .claudeCode: caption = "The same review through Claude Code, on your Claude subscription. No API key."
         }
         return HStack(spacing: 16) {
             IconTile(icon: k.isCloud ? "cloud" : "cpu")
@@ -179,9 +183,21 @@ private struct ModelsOverviewPage: View {
             }
             Spacer(minLength: 8)
             readinessPill(issue)
-            Button { ui.settingsPage = k == .local ? .local : .cloud(k) } label: { IconLabel("Edit", "pencil") }
-                .buttonStyle(.g(.secondary, height: 36))
-                .accessibilityLabel("Edit \(providerName(k))")
+            if k == .claudeCode {
+                // No key and no page: Claude Code signs in on its own, so only the model is chosen here.
+                Picker("", selection: $settings.claudeCodeModel) {
+                    ForEach(NotesEngineKind.claudeCodeModels, id: \.id) { m in Text(m.name).tag(m.id) }
+                    if !NotesEngineKind.claudeCodeModels.contains(where: { $0.id == settings.claudeCodeModel }) {
+                        Text(settings.claudeCodeModel).tag(settings.claudeCodeModel)
+                    }
+                }
+                .labelsHidden().frame(width: 110)
+                .accessibilityLabel("Claude Code model")
+            } else {
+                Button { ui.settingsPage = k == .local ? .local : .cloud(k) } label: { IconLabel("Edit", "pencil") }
+                    .buttonStyle(.g(.secondary, height: 36))
+                    .accessibilityLabel("Edit \(providerName(k))")
+            }
         }
         .card(padding: 16)
     }

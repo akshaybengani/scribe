@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let ui = UIState()
     private lazy var jobs = JobRunner(store: store, settings: settings)
     private lazy var search = SearchModel(store: store)
+    private lazy var notes = NotesRunner(store: store, settings: settings)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Inter and JetBrains Mono live in Contents/Resources/Fonts. Register them before the first view exists.
@@ -22,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(jobs)
             .environmentObject(ui)
             .environmentObject(search)
+            .environmentObject(notes)
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),

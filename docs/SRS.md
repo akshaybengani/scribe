@@ -290,13 +290,14 @@ The UI is native SwiftUI in the Graphite design (`Sources/Theme.swift`, tokens f
 
 | ID | Requirement | Status |
 |---|---|---|
-| FR-OPN-01 | The detail screen shall offer "Get another opinion" listing Local, Gemini, ElevenLabs, and Claude. Cloud engines shall be marked, Claude shall be marked as reading text only, and an engine that already has a result shall read "run again". | Built, untested |
+| FR-OPN-01 | The detail screen shall offer "Get another opinion" listing Local, Gemini, ElevenLabs, Claude, and Claude Code. Cloud engines shall be marked, Claude and Claude Code shall be marked as reading text only, and an engine that already has a result shall read "run again". | Built, untested |
 | FR-OPN-02 | Scribe shall keep one result per engine on a recording and show each as a tab. Running an engine again shall replace that engine's result. | Built, untested |
 | FR-OPN-03 | A tab shall show the engine name and a cloud icon for cloud engines. Its tooltip shall show the model name and elapsed seconds. | Built, untested |
 | FR-OPN-04 | Claude shall be unavailable until the recording has at least one result. | Built, untested |
 | FR-OPN-05 | Claude shall receive every existing result, labelled by engine and model, and shall return one reviewed transcript. Claude shall never receive audio and shall never be offered as the first transcription step. | Built, untested |
 | FR-OPN-06 | Before a cloud engine is started from the detail screen, Scribe shall show a confirmation that names the company and says whether audio or transcript text will be sent. | Built, untested |
 | FR-OPN-07 | Scribe shall show a side-by-side compare view of the results for one recording. | Planned |
+| FR-OPN-09 | Claude Code shall run the same text review as Claude through the Claude Code command line (`claude -p`) on the user's Claude Code sign-in, with no API key, no tools, MCP servers, settings or CLAUDE.md, and no saved session. The model (Opus, Sonnet or Haiku, default Opus) shall be chosen on the AI Models page. It shall not review its own earlier result. A missing `claude` shall show as the engine's issue. | Built, untested |
 
 #### 3.2.11 Cloud disclosure (FR-CLD)
 
@@ -358,16 +359,34 @@ The UI is native SwiftUI in the Graphite design (`Sources/Theme.swift`, tokens f
 | FR-ERR-05 | Permission and recording problems shall show as messages on the home screen. | Built, untested |
 | FR-ERR-06 | A failed save, export, or write shall tell you. | Planned |
 
+#### 3.2.16 Meeting notes (FR-NOT)
+
+| ID | Requirement | Status |
+|---|---|---|
+| FR-NOT-01 | Each recording shall have a Notes tab beside its transcript tabs. Without notes it shows a form to write them; with notes it shows them with the engine, model, source transcript and date. | Built, untested |
+| FR-NOT-02 | Notes shall be written by a local Ollama model or by Claude, chosen per run, with the default engine set in Settings, Meeting notes. Ollama is the default. | Built, untested |
+| FR-NOT-03 | Ollama models shall be listed from the local Ollama server (`/api/tags`). When Ollama isn't running or has no models, the form shall say so and how to fix it. | Built, untested |
+| FR-NOT-04 | The Ollama context size shall be set from the prompt's estimated size, capped by the model's own context length (`/api/show`). A transcript larger than the model can read shall be refused with a message, never cut silently. | Built, untested |
+| FR-NOT-05 | Claude notes shall run the Claude Code command line (`claude -p`, streamed JSON) on the user's Claude Code sign-in, not an API key, with the notes model from Settings (default `opus`) and medium effort. Claude shall get no tools, MCP servers, settings or CLAUDE.md, and the session shall not be saved. Any API key in the environment shall be removed. A missing `claude`, an error result or a refusal shall show as an error. | Built, untested |
+| FR-NOT-06 | Before a Claude run, the form shall state that the transcript text, with its character count, goes to Anthropic through Claude Code and audio doesn't, and the button shall read "Send to Claude and write notes". | Built, untested |
+| FR-NOT-07 | Notes shall be written from the best transcript (Claude review, then the Claude Code review, Gemini, ElevenLabs, Local) unless another tab is chosen. | Built, untested |
+| FR-NOT-08 | The notes instructions shall be editable in Settings, with a reset to the default (Summary, Decisions, Action items with owners, Open questions, Key details, in English). | Built, untested |
+| FR-NOT-09 | Notes shall appear as they are written, with the phase, elapsed time and a Cancel button, and shall be saved on the recording (`meta.json`, field `notes`) when complete. Old recordings without notes shall still load. | Built, untested |
+| FR-NOT-10 | Notes shall be copyable and exportable as Markdown, included in the full export as "Title - Notes.md" and in `metadata.json`, and returned by `scribe-mcp` with the call. | Built, untested |
+| FR-NOT-11 | An Ollama run shall wait for any local transcription to finish, and the Mac shall stay awake while notes are written. | Built, untested |
+| FR-NOT-12 | Project files as context, linked to a library folder, with ignore rules and a secrets filter. | Planned (phase 2) |
+| FR-NOT-13 | Long calls on local models shall be summarised in parts and combined. | Planned (phase 3) |
+
 ### 3.3 Non-functional requirements
 
 #### 3.3.1 Privacy (NFR-PRV)
 
 | ID | Requirement | Status |
 |---|---|---|
-| NFR-PRV-01 | With Local chosen and no API key entered, Scribe shall make no network connection while recording, importing, transcribing, searching, or exporting. | Built, untested |
+| NFR-PRV-01 | With Local chosen and no API key entered, Scribe shall make no network connection while recording, importing, transcribing, searching, or exporting. Local meeting notes talk only to the Ollama server on this Mac (`localhost:11434` by default). | Built, untested |
 | NFR-PRV-02 | Scribe shall have no accounts, no backend, no analytics, and no telemetry. | Built, untested |
 | NFR-PRV-03 | Audio and transcripts shall be stored only on this Mac, under `~/Library/Application Support/Scribe/`. They are not encrypted and not backed up by Scribe. Export is the way to copy them out. | Built, untested |
-| NFR-PRV-04 | Audio shall be sent to a third party only to Gemini or ElevenLabs, and only after you chose that engine. Transcript text shall be sent only to Anthropic, and only for a Claude review. | Built, untested |
+| NFR-PRV-04 | Audio shall be sent to a third party only to Gemini or ElevenLabs, and only after you chose that engine. Transcript text shall be sent only to Anthropic, and only for a Claude or Claude Code review or Claude meeting notes. | Built, untested |
 | NFR-PRV-05 | Nothing shall leave the Mac without a visible warning (FR-CLD-01) and a per-send confirmation (FR-CLD-03). | Planned |
 | NFR-PRV-06 | Temporary conversion and chunk files shall be deleted when a job ends, whether it passes or fails. | Built, untested |
 | NFR-PRV-07 | The app shall hold no model downloader. Model downloads shall happen only in the setup scripts. | Verified |
@@ -622,6 +641,7 @@ Errors are held in memory per recording and engine. They clear on the next start
 | FR-PLY-01, FR-PLY-02 | `Sources/Audio.swift` (`Player`); `Sources/DetailView.swift` (`PlayerBar`) | Not exercised |
 | FR-OPN-01 to FR-OPN-06 | `Sources/Dialogs.swift` (`CloudConfirmDialog`); `Sources/DetailView.swift` (`OpinionList`); `Sources/Providers.swift`; `Sources/Model.swift` | Claude request not sent |
 | FR-OPN-07 | None | Proposed in design, not built |
+| FR-OPN-09 | `Sources/Providers.swift` (`ClaudeCodeReviewer`); `Sources/Notes.swift` (`ClaudeCode`); `Sources/SettingsView.swift` | Live run on a made-up sample through the app code; not yet from the app |
 | FR-CLD-01, FR-CLD-02 | `Sources/Views.swift` (`ContentView`); `Sources/RecordViews.swift`; `Sources/Theme.swift` (`WarningBanner`) | Not exercised with a live cloud job |
 | FR-CLD-03, NFR-PRV-05 | None (see KG-01) | Planned |
 | FR-SET-01 to FR-SET-09 | `Sources/SettingsView.swift`; `Sources/Settings.swift`; `Sources/Theme.swift`; `Sources/main.swift` | Not exercised since the redesign |
@@ -634,6 +654,7 @@ Errors are held in memory per recording and engine. They clear on the next start
 | FR-APP-06 | `build.sh`; `assets/README.md` | Not run with the certificate in a session |
 | FR-ERR-01 to FR-ERR-05 | `Sources/Providers.swift`; `Sources/TranscriptViews.swift` (`JobErrorPanel`); `Sources/RecordViews.swift`; `Sources/Audio.swift` | Local failure paths only from the pipeline run |
 | FR-ERR-06, NFR-SEC-05, NFR-ACC-03 to NFR-ACC-05 | None | Planned |
+| FR-NOT-01 to FR-NOT-11 | `Sources/Notes.swift`; `Sources/NotesViews.swift`; `Sources/DetailView.swift`; `Sources/Model.swift`; `Sources/Settings.swift`; `Sources/ExportFlow.swift`; `Sources/MCP/main.swift` | Stream parsers and prompt checked offline; no live Ollama or Claude run yet |
 | NFR-PRV-01 to NFR-PRV-04, NFR-PRV-06 to NFR-PRV-09 | `Sources/Providers.swift`; `Sources/ModelCatalog.swift`; `build.sh`; `setup/*.sh` | Read from code. No network trace taken. |
 | NFR-PRF-01, NFR-PRF-02, NFR-PRF-05 | `Sources/Providers.swift`; `Sources/Audio.swift` | Timing from the model comparison on a 10 minute 54 second clip |
 | NFR-PRF-03, NFR-PRF-06, NFR-PRF-07 | None | Planned |
@@ -662,21 +683,22 @@ Errors are held in memory per recording and engine. They clear on the next start
 | FR-FLD folders and library | 14 | 6 | 8 | 0 |
 | FR-SCH search | 8 | 0 | 8 | 0 |
 | FR-PLY playback | 2 | 0 | 2 | 0 |
-| FR-OPN opinions | 7 | 0 | 6 | 1 |
+| FR-OPN opinions | 8 | 0 | 7 | 1 |
 | FR-CLD cloud disclosure | 3 | 0 | 2 | 1 |
 | FR-SET settings | 9 | 0 | 9 | 0 |
 | FR-EXP export | 11 | 0 | 9 | 2 |
 | FR-APP appearance and shortcuts | 6 | 0 | 6 | 0 |
 | FR-ERR errors | 6 | 0 | 5 | 1 |
+| FR-NOT meeting notes | 13 | 0 | 11 | 2 |
 | NFR-PRV privacy | 9 | 1 | 7 | 1 |
 | NFR-PRF performance | 7 | 3 | 1 | 3 |
 | NFR-REL reliability | 7 | 1 | 4 | 2 |
 | NFR-USA usability | 6 | 0 | 6 | 0 |
 | NFR-ACC accessibility | 5 | 0 | 2 | 3 |
 | NFR-SEC security of keys | 5 | 0 | 4 | 1 |
-| Total | 181 | 15 | 147 | 19 |
+| Total | 195 | 15 | 159 | 21 |
 
-The 11 design constraints (CON) carry no status because they describe the build, not behaviour. Of the 181 requirements, 15 are verified, 147 are built but untested, and 19 are planned.
+The 11 design constraints (CON) carry no status because they describe the build, not behaviour. Of the 195 requirements, 15 are verified, 159 are built but untested, and 21 are planned.
 
 ### 6.3 Evidence from the build sessions
 
@@ -731,6 +753,7 @@ UI snapshots show that screens render. They aren't counted as verification of an
 
 | Date | Version | Change |
 |---|---|---|
+| 20 Nov 2026 | 0.3 | Added FR-NOT (meeting notes, FR-NOT-01 to FR-NOT-13) after D-37 reversed the notes non-goal. Changed NFR-PRV-01 (local notes talk to Ollama on this Mac only) and NFR-PRV-04 (Claude meeting notes). Added FR-OPN-09 (Claude Code review on the subscription) and moved FR-NOT-05 to Claude Code. Totals are 195: 15 verified, 159 built but untested, 21 planned. Other changes since 0.2 (echo cancellation, computer-audio-only recording, the local job queue, the transcript fixes, Appearance, scribe-mcp) are in the README and git history and still need their own requirements. |
 | 17 Nov 2026 | 0.2 | New scope. Added groups FR-PRG (progress), FR-SPK (speaker labels), FR-MDL (model lists), FR-SCH (search), and FR-APP (shortcuts, branding, signing, fonts). Added FR-TRN-19 to FR-TRN-23, FR-SPK-06, FR-SPK-07, FR-SCH-08, FR-EXP-08 to FR-EXP-11, EXT-11, EXT-12, NFR-PRV-09, NFR-PRF-07, NFR-REL-07, and CON-09 to CON-11. Replaced FR-FLD-15 (search) with FR-SCH and FR-OPN-08 (command palette) with the search bar and Cmd+K. Closed KG-04. Changed FR-TRN-05 and the English default to large-v3-turbo (5-bit), FR-TRN-09 (diarization on by default), FR-FLD-13 and FR-FLD-14 (delete with confirmation), FR-SET-09 (Graphite built, follows system appearance), and the default models (`gemini-3.5-transcribe`, `scribe_v2`). Moved EXT-01, FR-TRN-03, FR-TRN-04, FR-TRN-05, and NFR-USA-03 from Verified to Built, untested because the code changed after they were checked. Added KG-18 to KG-23. The source was changing while this was written, so each status reflects the files on 17 Nov 2026 and needs a re-check after the next build. |
 | 16 Nov 2026 | 0.1 | First version, from the code in the repository. |
 

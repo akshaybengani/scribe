@@ -159,6 +159,7 @@ private func opinionBlurb(_ k: ProviderKind) -> String {
     case .gemini: return "Sends the audio to Google"
     case .elevenlabs: return "Sends the audio to ElevenLabs"
     case .claude: return "Reads the existing transcripts only. Sends the text, never audio, to Anthropic"
+    case .claudeCode: return "Same review on your Claude subscription through Claude Code, no API key. Sends the text, never audio, to Anthropic"
     }
 }
 
@@ -211,6 +212,9 @@ struct DetailView: View {
     @EnvironmentObject var ui: UIState
     @State private var chosen: ProviderKind?
     @State private var showOpinions = false
+    /// The Notes tab is open instead of a transcript tab.
+    @State private var showNotes = false
+    @EnvironmentObject var notes: NotesRunner
     @StateObject private var find = FindState()
     @AppStorage("transcriptFontSize") private var fontSize = 14.0
     @AppStorage("transcriptReading") private var reading = false
@@ -303,8 +307,10 @@ struct DetailView: View {
             Rectangle().fill(G.border).frame(height: 1)
             errors
             transcriptArea
-            Rectangle().fill(G.border).frame(height: 1)
-            actionsRow
+            if !showNotes {
+                Rectangle().fill(G.border).frame(height: 1)
+                actionsRow
+            }
         }
         .clippedCard()
         .frame(maxHeight: .infinity)
@@ -316,7 +322,7 @@ struct DetailView: View {
                 let on = selectedKind == k
                 let result = current.results.first { $0.provider == k }
                 let running = jobs.isRunning(recording.id, k)
-                Button { chosen = k } label: {
+                Button { chosen = k; showNotes = false } label: {
                     HStack(spacing: 8) {
                         GIcon(k.isCloud ? "cloud" : "cpu", size: 12)
                         Text(result?.tabTitle ?? k.short).lineLimit(1)
@@ -328,10 +334,10 @@ struct DetailView: View {
                         }
                     }
                     .font(GFont.ui(13, .medium))
-                    .foregroundStyle(on ? G.text : G.text2)
+                    .foregroundStyle(on && !showNotes ? G.text : G.text2)
                     .padding(.horizontal, 14)
                     .frame(height: 40)
-                    .overlay(alignment: .bottom) { Rectangle().fill(on ? G.accent : Color.clear).frame(height: 2) }
+                    .overlay(alignment: .bottom) { Rectangle().fill(on && !showNotes ? G.accent : Color.clear).frame(height: 2) }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -349,11 +355,34 @@ struct DetailView: View {
                 }
                 .buttonStyle(.plain)
             }
+            notesTab
             Spacer()
-            if shown != nil { readingControls }
+            if shown != nil && !showNotes { readingControls }
         }
         .padding(.horizontal, 8)
         .frame(height: 41)
+    }
+
+    private var notesTab: some View {
+        let running = notes.job(recording.id) != nil
+        return Button { showNotes = true } label: {
+            HStack(spacing: 8) {
+                GIcon("list.bullet.rectangle", size: 12)
+                Text("Notes")
+                if running { ProgressView().controlSize(.mini) }
+                if notes.error(recording.id) != nil && !running {
+                    GIcon("exclamationmark.triangle.fill", size: 11).foregroundStyle(G.warnIcon)
+                }
+            }
+            .font(GFont.ui(13, .medium))
+            .foregroundStyle(showNotes ? G.text : G.text2)
+            .padding(.horizontal, 14)
+            .frame(height: 40)
+            .overlay(alignment: .bottom) { Rectangle().fill(showNotes ? G.accent : Color.clear).frame(height: 2) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(current.notes == nil ? "Write meeting notes from the transcript" : "Meeting notes")
     }
 
     private var readingControls: some View {
@@ -393,11 +422,13 @@ struct DetailView: View {
 
     private var transcriptArea: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let r = shown {
-                if r.provider == .claude {
+            if showNotes {
+                NotesPane(recording: current)
+            } else if let r = shown {
+                if !r.provider.hearsAudio {
                     HStack(alignment: .top, spacing: 10) {
                         GIcon("sparkles", size: 13).foregroundStyle(G.accentText).padding(.top, 1)
-                        Text("Text review by Claude. It read the other transcripts only, not the audio, and returned one reviewed version.")
+                        Text("Text review by \(r.provider == .claudeCode ? "Claude through Claude Code" : "Claude"). It read the other transcripts only, not the audio, and returned one reviewed version.")
                             .font(GFont.ui(12)).foregroundStyle(G.text2)
                     }
                     .padding(.horizontal, 28).padding(.vertical, 10)

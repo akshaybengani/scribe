@@ -59,6 +59,7 @@ func summary(_ r: Recording, _ store: RecordingStore) -> [String: Any] {
         "language": r.callLanguage.title,
         "folder": folderPath(r.folderID, store),
         "transcripts": r.results.map { $0.provider.rawValue },
+        "has_notes": r.notes != nil,
     ]
 }
 
@@ -105,6 +106,10 @@ func document(_ r: Recording, _ store: RecordingStore, _ args: [String: Any]) th
     }
     if r.results.isEmpty { notes.append("This call has no transcript yet. Transcribe it in Scribe first.") }
     var out = Exporter.document(for: r, tabs: tabs, format: .markdown, folderPath: folderPath(r.folderID, store))
+    if let n = r.notes, (args["include_notes"] as? Bool) ?? true {
+        out += "\n---\n\n## Meeting notes\n\n_Written by \(n.engine.rawValue) (\(n.model)) from the \(n.source.rawValue) transcript._\n\n"
+            + n.text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+    }
     var meta = "\n---\n\nScribe call id: \(r.id)\nLanguage: \(r.callLanguage.title)\n"
     if r.results.count > 1 && !all {
         meta += "Other transcripts available: "
@@ -134,20 +139,22 @@ let tools: [[String: Any]] = [
     ],
     [
         "name": "get_latest_call",
-        "description": "Import the most recent Scribe call: title, date, duration, folder and the full transcript as Markdown.",
+        "description": "Import the most recent Scribe call: title, date, duration, folder, the full transcript as Markdown, and its meeting notes when it has them.",
         "inputSchema": ["type": "object", "properties": [
             "provider": providerSchema,
             "all_transcripts": ["type": "boolean", "description": "Return every transcript of the call as sections."],
+            "include_notes": ["type": "boolean", "description": "Append the call's meeting notes when it has them (default true)."],
         ]],
         "annotations": ["readOnlyHint": true],
     ],
     [
         "name": "get_call",
-        "description": "Import one Scribe call by id (or a unique id prefix): metadata plus the full transcript as Markdown.",
+        "description": "Import one Scribe call by id (or a unique id prefix): metadata, the full transcript as Markdown, and its meeting notes when it has them.",
         "inputSchema": ["type": "object", "required": ["id"], "properties": [
             "id": ["type": "string", "description": "Call id from list_recent_calls, search_calls or list_folders."],
             "provider": providerSchema,
             "all_transcripts": ["type": "boolean", "description": "Return every transcript of the call as sections."],
+            "include_notes": ["type": "boolean", "description": "Append the call's meeting notes when it has them (default true)."],
         ]],
         "annotations": ["readOnlyHint": true],
     ],

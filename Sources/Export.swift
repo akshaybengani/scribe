@@ -119,7 +119,7 @@ struct ExportPlanItem: Equatable {
 
 enum Exporter {
     /// Order tried when the preferred provider is missing from a recording.
-    static let fallbackOrder: [ProviderKind] = [.claude, .gemini, .elevenlabs, .local]
+    static let fallbackOrder: [ProviderKind] = [.claude, .claudeCode, .gemini, .elevenlabs, .local]
 
     // MARK: Names
 

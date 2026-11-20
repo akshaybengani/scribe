@@ -52,6 +52,7 @@ struct Config: Sendable {
     var geminiKey: String, geminiModel: String
     var elevenKey: String, elevenModel: String
     var claudeKey: String, claudeModel: String
+    var claudeCodeModel: String
 
     func localPath(_ lang: CallLanguage) -> String { lang == .english ? englishModelPath : localModelPath }
 
@@ -61,6 +62,7 @@ struct Config: Sendable {
         case .gemini: return geminiModel
         case .elevenlabs: return elevenModel
         case .claude: return claudeModel
+        case .claudeCode: return claudeCodeModel
         }
     }
 }
@@ -95,6 +97,43 @@ final class AppSettings: ObservableObject {
 
     """
 
+    /// The default instructions for meeting notes. The transcript follows them.
+    static let defaultNotesTemplate = """
+    Write meeting notes in English from the transcript below. The call mixes Hindi and English and was \
+    transcribed by a machine, so some words are wrong: infer the meaning from context, and never invent \
+    names, numbers or dates that are not in the transcript.
+
+    Use these Markdown sections, and leave a section out if the call has nothing for it:
+
+    ## Summary
+    Three to six sentences: what the call was about and where it landed.
+
+    ## Decisions
+    One bullet per decision.
+
+    ## Action items
+    One bullet each: **Owner**: task (due date if one was said). Use "Unassigned" when no owner is clear.
+
+    ## Open questions
+    Things raised but not settled.
+
+    ## Key details
+    Names, numbers, dates, systems and terms worth keeping.
+    """
+
+    nonisolated static let defaultOllamaURL = "http://localhost:11434"
+    nonisolated static let defaultNotesClaudeModel = "opus"
+
+    @Published var notesEngineRaw: String { didSet { d.set(notesEngineRaw, forKey: "notesEngine") } }
+    var notesEngine: NotesEngineKind {
+        get { NotesEngineKind(rawValue: notesEngineRaw) ?? .ollama }
+        set { notesEngineRaw = newValue.rawValue }
+    }
+    @Published var ollamaURL: String { didSet { d.set(ollamaURL, forKey: "ollamaURL") } }
+    @Published var ollamaModel: String { didSet { d.set(ollamaModel, forKey: "ollamaModel") } }
+    @Published var notesClaudeModel: String { didSet { d.set(notesClaudeModel, forKey: "notesClaudeModel") } }
+    @Published var notesTemplate: String { didSet { d.set(notesTemplate, forKey: "notesTemplate") } }
+
     @Published var primary: ProviderKind { didSet { d.set(primary.rawValue, forKey: "primary") } }
     @Published var captureSystemAudio: Bool { didSet { d.set(captureSystemAudio, forKey: "captureSystemAudio") } }
     /// Off records computer audio only (for example a webinar). On by default.
@@ -115,6 +154,8 @@ final class AppSettings: ObservableObject {
     @Published var geminiModel: String { didSet { d.set(geminiModel, forKey: "geminiModel") } }
     @Published var elevenModel: String { didSet { d.set(elevenModel, forKey: "elevenModel") } }
     @Published var claudeModel: String { didSet { d.set(claudeModel, forKey: "claudeModel") } }
+    /// Claude Code model name (opus, sonnet, haiku) for the transcript review on the subscription.
+    @Published var claudeCodeModel: String { didSet { d.set(claudeCodeModel, forKey: "claudeCodeModel") } }
 
     @Published var geminiKey: String { didSet { Keychain.set(geminiKey, account: "gemini"); keyChanged(.gemini) } }
     @Published var elevenKey: String { didSet { Keychain.set(elevenKey, account: "elevenlabs"); keyChanged(.elevenlabs) } }
@@ -167,6 +208,11 @@ final class AppSettings: ObservableObject {
         self.session = session
         Self.migrateModelDefaults(defaults)
         primary = ProviderKind(rawValue: d.string(forKey: "primary") ?? "") ?? .local
+        notesEngineRaw = d.string(forKey: "notesEngine") ?? NotesEngineKind.ollama.rawValue
+        ollamaURL = d.string(forKey: "ollamaURL") ?? Self.defaultOllamaURL
+        ollamaModel = d.string(forKey: "ollamaModel") ?? ""
+        notesClaudeModel = d.string(forKey: "notesClaudeModel") ?? Self.defaultNotesClaudeModel
+        notesTemplate = d.string(forKey: "notesTemplate") ?? Self.defaultNotesTemplate
         captureSystemAudio = d.bool(forKey: "captureSystemAudio")
         captureMicrophone = d.object(forKey: "captureMicrophone") as? Bool ?? true
         echoCancellation = d.object(forKey: "echoCancellation") as? Bool ?? true
@@ -188,6 +234,7 @@ final class AppSettings: ObservableObject {
         geminiModel = d.string(forKey: "geminiModel") ?? ModelCatalog.defaultModel(.gemini)
         elevenModel = d.string(forKey: "elevenModel") ?? ModelCatalog.defaultModel(.elevenlabs)
         claudeModel = d.string(forKey: "claudeModel") ?? ModelCatalog.defaultModel(.claude)
+        claudeCodeModel = d.string(forKey: "claudeCodeModel") ?? ModelCatalog.defaultModel(.claudeCode)
         geminiKey = Keychain.get("gemini")
         elevenKey = Keychain.get("elevenlabs")
         claudeKey = Keychain.get("claude")
@@ -208,7 +255,7 @@ final class AppSettings: ObservableObject {
         case .gemini: return geminiKey
         case .elevenlabs: return elevenKey
         case .claude: return claudeKey
-        case .local: return ""
+        case .local, .claudeCode: return ""
         }
     }
 
@@ -217,6 +264,7 @@ final class AppSettings: ObservableObject {
         case .gemini: return geminiModel
         case .elevenlabs: return elevenModel
         case .claude: return claudeModel
+        case .claudeCode: return claudeCodeModel
         case .local: return ""
         }
     }
@@ -226,6 +274,7 @@ final class AppSettings: ObservableObject {
         case .gemini: geminiModel = id
         case .elevenlabs: elevenModel = id
         case .claude: claudeModel = id
+        case .claudeCode: claudeCodeModel = id
         case .local: break
         }
     }
@@ -327,7 +376,7 @@ final class AppSettings: ObservableObject {
                language: language, hint: hint, style: style,
                geminiKey: geminiKey, geminiModel: geminiModel,
                elevenKey: elevenKey, elevenModel: elevenModel,
-               claudeKey: claudeKey, claudeModel: claudeModel)
+               claudeKey: claudeKey, claudeModel: claudeModel, claudeCodeModel: claudeCodeModel)
     }
 
     func name(_ k: ProviderKind, language: CallLanguage? = nil) -> String {
@@ -350,6 +399,7 @@ final class AppSettings: ObservableObject {
         case .gemini: return cloudIssue(geminiKey, geminiModel, "Gemini")
         case .elevenlabs: return cloudIssue(elevenKey, elevenModel, "ElevenLabs")
         case .claude: return cloudIssue(claudeKey, claudeModel, "Claude")
+        case .claudeCode: return ClaudeCode.findBinary() == nil ? ClaudeCode.notFound : nil
         }
     }
 

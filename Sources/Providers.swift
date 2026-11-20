@@ -770,6 +770,32 @@ struct ClaudeReviewer {
     }
 }
 
+/// The same review as `ClaudeReviewer`, run through Claude Code on the user's Claude subscription.
+struct ClaudeCodeReviewer {
+    let model: String
+    var english = false
+
+    func review(results: [TranscriptResult], context: String, progress: ProgressReporter? = nil) async throws -> String {
+        // Never review its own earlier output: start from the transcripts that came from audio or the API review.
+        let results = results.filter { $0.provider != .claudeCode }
+        guard !results.isEmpty else { throw TranscribeError.message("Claude Code needs at least one existing transcript to review.") }
+        progress?.begin(.waiting)
+        var sources = ""
+        for (i, r) in results.enumerated() {
+            sources += "=== Transcript \(i + 1): \(r.provider.short), \(r.modelName) ===\n\(r.text)\n\n"
+        }
+        let buffer = TextBuffer()
+        try await ClaudeCode.run(model: model,
+                                 system: "You review call transcripts and return one corrected transcript. Follow the instructions exactly and output only the transcript.",
+                                 user: Prompts.review(sources: sources, context: context, english: english)) { t in
+            _ = buffer.append(t)
+        }
+        let text = buffer.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw TranscribeError.message("Claude Code returned no text.") }
+        return tidy(text)
+    }
+}
+
 // MARK: - Dispatch and job tracking
 
 enum Engine {
@@ -801,6 +827,9 @@ enum Engine {
                 .transcribe(audio: audio, context: cfg.hint, progress: progress)
         case .claude:
             return try await ClaudeReviewer(key: cfg.claudeKey, model: cfg.claudeModel, english: english)
+                .review(results: existing, context: cfg.hint, progress: progress)
+        case .claudeCode:
+            return try await ClaudeCodeReviewer(model: cfg.claudeCodeModel, english: english)
                 .review(results: existing, context: cfg.hint, progress: progress)
         }
     }

@@ -76,12 +76,25 @@ enum FullExporter {
             do { try combined.write(to: mdURL, atomically: true, encoding: .utf8); item.files.append(mdURL) }
             catch { item.errors.append("Markdown: \(error.localizedDescription)") }
 
+            // Meeting notes, when the recording has them
+            var notesMeta: [String: Any]?
+            if let n = r.notes {
+                let notesURL = folder.appendingPathComponent("\(base) - Notes.md")
+                do {
+                    try ("# \(r.title) - Notes\n\n" + n.text + "\n").write(to: notesURL, atomically: true, encoding: .utf8)
+                    item.files.append(notesURL)
+                    notesMeta = ["file": notesURL.lastPathComponent, "engine": n.engine.rawValue, "model": n.model,
+                                 "fromTranscript": n.source.rawValue, "date": iso(n.date)]
+                } catch { item.errors.append("Notes: \(error.localizedDescription)") }
+            }
+
             // Metadata
-            let meta: [String: Any] = [
+            var meta: [String: Any] = [
                 "id": r.id, "title": r.title, "created": iso(r.created), "durationSeconds": r.duration,
                 "language": r.callLanguage.rawValue, "folder": s.folderComponents.joined(separator: " / "),
                 "audioFile": r.audioFile, "transcripts": metaFiles, "exportedAt": iso(Date()), "app": "Scribe",
             ]
+            if let notesMeta { meta["notes"] = notesMeta }
             let jsonURL = folder.appendingPathComponent("metadata.json")
             do {
                 let data = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
@@ -169,6 +182,7 @@ struct ExportDialog: View {
                 include("waveform", "The audio file")
                 include("doc.text", "Every transcript as its own text file, one per model")
                 include("doc.richtext", "One combined Markdown file")
+                include("list.bullet.rectangle", "Meeting notes, when a recording has them")
                 include("curlybraces", "A small metadata.json (title, date, length, models)")
             }
             .padding(14)

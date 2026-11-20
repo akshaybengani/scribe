@@ -6,7 +6,7 @@
 
 **A privacy-first Mac app that turns recorded calls into transcripts, on your own machine.**
 
-Built for calls that mix Hindi and English in one sentence. It doesn't write notes: it produces an accurate transcript and makes pasting it into Claude a single action.
+Built for calls that mix Hindi and English in one sentence. It produces an accurate transcript, then writes meeting notes from it with a local model or Claude, or makes pasting it into Claude a single action.
 
 [![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20Apple%20Silicon-C6F135?labelColor=16181D)](#run-it)
 [![Build](https://img.shields.io/badge/build-swiftc%20only-C6F135?labelColor=16181D)](#run-it)
@@ -86,7 +86,7 @@ Read it with the limits in view: one clip, one meeting, one reference. The local
 
 Each claim below is something you can check without trusting me.
 
-- **The local engine opens no connection.** Network code sits in four files: the cloud transcribers and the Claude reviewer in [`Sources/Providers.swift`](Sources/Providers.swift), the upload helper they share in `Sources/Progress.swift`, and the model-list requests in `Sources/ModelCatalog.swift` (with `Sources/Settings.swift` holding the session). `LocalTranscriber` has none, and neither does the Claude Code server in `Sources/MCP/`. Check with `grep -rn URLSession Sources`.
+- **The local engine opens no connection.** Network code sits in five files: the cloud transcribers and the Claude reviewer in [`Sources/Providers.swift`](Sources/Providers.swift), the upload helper they share in `Sources/Progress.swift`, the model-list requests in `Sources/ModelCatalog.swift` (with `Sources/Settings.swift` holding the session), and meeting notes in `Sources/Notes.swift` (Ollama on this Mac). The Claude Code review and Claude notes open no connection themselves: they run the Claude Code command line. `LocalTranscriber` has none, and neither does the Claude Code server in `Sources/MCP/`. Check with `grep -rn URLSession Sources`.
 - **No analytics, no accounts, no backend.** [`build.sh`](build.sh) compiles `Sources/*.swift` and `Sources/MCP/main.swift` against system frameworks only. There are no third-party packages.
 - **The Claude Code server is read-only.** `scribe-mcp` reads the library from disk and never writes to it. Transcript text reaches Anthropic only when you ask Claude Code for a call.
 - **The app declares one usage string, the microphone.** Computer audio asks for Screen & System Audio Recording at runtime, only when you tick it.
@@ -117,7 +117,7 @@ What the privacy costs:
 - **Remove speaker echo** (on by default): the microphone runs through Apple's on-device voice processing, the echo canceller FaceTime uses, so a call played on the Mac's speakers isn't recorded a second time by the mic. Only the cleaned voice channel is kept. Measured on a MacBook Air, speaker sound from another app in the mic fell from -14.5 to -48 dBFS.
 - **Import** any audio file. It's copied into the library and the original is left alone.
 - **Choose a call language** per recording: Hindi + English, or English only (a separate model file and prompt, large-v3-turbo at 5-bit by default).
-- **Transcribe** with Local (whisper.cpp), Gemini, or ElevenLabs Scribe. Claude reviews existing transcripts as text only.
+- **Transcribe** with Local (whisper.cpp), Gemini, or ElevenLabs Scribe. Claude reviews existing transcripts as text only, either with an Anthropic API key or through Claude Code on your Claude subscription (no key; it runs `claude -p` with no tools or files).
 - **Long recordings:** Gemini and ElevenLabs get recordings over 60 minutes in parts of about 25 minutes (29 minutes for Gemini with speaker labels), cut at the quietest point and stitched in order. Failed parts retry. A job screen shows percent, elapsed, time left, and chunk x of y.
 - **Local jobs run one at a time**, so two copies of a large model never share the GPU. Others wait with "Waiting for another local transcription to finish". The Mac stays awake while a job runs (closing the lid still pauses it). If whisper-cli fails, its full output is saved as `whisper-error.log` in the recording's folder.
 - **Search** every title, folder, and transcript from the bar at the top (Cmd+K), then find within a transcript.
@@ -127,7 +127,8 @@ What the privacy costs:
 - **Use calls from Claude Code**: a bundled MCP server lets Claude Code list, search, and import your calls on request. See [Use it from Claude Code](#use-it-from-claude-code).
 - **Keep every opinion** as a tab, one per engine, and ask for more with "Get another opinion".
 - **Organise** recordings in nested, colour-coded folders (nine colours, any depth). Move by menu or drag and drop. Deleting a folder moves its contents up and never deletes audio.
-- **Hand off**: copy the transcript, copy it with an editable notes prompt for Claude, or export it as text. The export dialog writes the audio, a text file per transcript, one combined Markdown file, and a metadata.json for each recording.
+- **Meeting notes**: a Notes tab on each recording writes a summary, decisions, action items with owners, open questions and key details, in English, from the best transcript. Choose a local Ollama model (the default, nothing leaves the Mac) or Claude through Claude Code (it runs `claude -p` with your Claude Code sign-in, so it uses your Claude subscription and needs no API key; Claude gets no tools or files, the transcript text goes to Anthropic, never audio, and the button says so). Notes appear as they're written, can be cancelled, copied, exported as Markdown, and rewritten with another model. Change the format in Settings, Meeting notes.
+- **Hand off**: copy the transcript, copy it with an editable notes prompt for Claude, or export it as text. The export dialog writes the audio, a text file per transcript, one combined Markdown file, the meeting notes, and a metadata.json for each recording.
 - **Delete** asks first, and removes the audio and its transcripts together.
 
 ### What's built and what isn't
@@ -147,6 +148,8 @@ What the privacy costs:
 | Remove speaker echo | Built. The echo canceller was measured outside the app (below); recording with it in the app is not yet exercised. |
 | Local job queue, keep awake during jobs, whisper-error.log | Built, not yet exercised |
 | Lenient read of whisper-cli output | Built and checked on the 75 minute call that failed before (see Tests) |
+| Meeting notes with Ollama or Claude Code (phase 1: from the transcript) | Built. Ollama (qwen3:8b) ran end to end on a 75-minute call. The Claude Code path ran on a short sample; not yet from the app. |
+| Meeting notes with project files as context, long calls on local models | Planned (phases 2 and 3) |
 | Confirmation before every cloud send | Not built (see the gap above) |
 | Local chunking, compare-opinions view, Windows | Not built |
 
@@ -177,6 +180,9 @@ Sources/
   ModelCatalog.swift  curated names and each provider's list-models API
   Settings.swift      settings, Keychain, model catalogs
   SettingsView.swift  the Settings sheet, including Appearance and Claude Code
+  Notes.swift         meeting notes: Ollama streaming, Claude Code (`claude -p`), the notes runner
+  NotesViews.swift    the Notes tab, its form, Markdown rendering, Settings > Meeting notes
+  TranscriptCleanup.swift  drops whisper's gibberish lines from local transcripts
   MCP/main.swift      scribe-mcp, the read-only MCP server for Claude Code
   Search.swift        global search index and query engine
   SearchBar.swift     the search bar and results panel
@@ -253,7 +259,7 @@ Settings > Claude Code shows whether it's added, with the command and the server
 
 | Tool | What it does |
 |---|---|
-| `get_latest_call` | Import the most recent call with its full transcript |
+| `get_latest_call` | Import the most recent call with its full transcript and its meeting notes |
 | `search_calls` | The same global search as Cmd+K: titles, folders, and every transcript. `"Quotes"` match an exact phrase |
 | `get_call` | Import any call by id (a short prefix works), with one chosen transcript or all of them |
 | `list_recent_calls` | The latest calls with date, length, language, and folder |

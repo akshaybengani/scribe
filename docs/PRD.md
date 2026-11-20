@@ -13,9 +13,9 @@ The use case is narrow and repeated:
 1. A call happens, in a meeting app, a browser, or in the room.
 2. The call is recorded and saved without ceremony.
 3. A transcript is produced.
-4. The transcript is pasted into Claude, which writes the notes.
+4. Notes are written from the transcript.
 
-Scribe covers steps 2 and 3, and makes step 4 a single copy action. It doesn't write the notes itself.
+Scribe covers steps 2 and 3. For step 4 it offers two ways: one copy action to paste the transcript into Claude, or meeting notes written inside Scribe by a local Ollama model or by Claude (D-37).
 
 A model comparison shaped the design. On a 5 minute Hindi and English clip, the best local model scored 22.9% against a human-corrected reference, and the best cloud model scored 11.0%. That gap is real, but the local result is usable and it never leaves the Mac, so Scribe is local first and treats cloud models as optional second opinions.
 
@@ -35,6 +35,7 @@ One person: the owner. A developer on an Apple Silicon Mac who records calls for
 | Get an accurate transcript | A recording is saved | Text in the right script, in order, with names spelled usefully, with no network needed |
 | Take a second look | A transcript has doubtful passages | Another engine's version sits beside the first, one tab each |
 | Hand off to Claude | A transcript is ready | One action copies it with a notes prompt |
+| Get meeting notes | A transcript is ready | Summary, decisions, action items with owners, and open questions sit on the recording, written locally or by Claude |
 | Find it again | Weeks later | Recordings sit in nested, colour-coded folders, and a search finds any word in any transcript |
 | Follow a long job | A recording runs for an hour or more | Progress shows percent, elapsed, time remaining, which part of how many, and the upload stage |
 | Take everything out | You want a copy outside Scribe | Export gives the audio, every transcript as text, a combined Markdown file, and a metadata file |
@@ -53,7 +54,7 @@ One person: the owner. A developer on an Apple Silicon Mac who records calls for
 
 ### 3.2 Non-goals
 
-- Writing notes, summaries, or action items inside Scribe. Claude does that.
+- ~~Writing notes, summaries, or action items inside Scribe.~~ Reversed on 20 Nov 2026 (D-37): Scribe now writes meeting notes, and Copy for Claude stays.
 - Accounts, sync, sharing, a backend, or telemetry.
 - The App Store or any distribution beyond the owner's Mac.
 - Windows, Linux, iOS, or Intel Macs.
@@ -105,6 +106,9 @@ Release key: **0.1** is built in the repo. **Next** is committed. **Later** is p
 | US-26 | The user selects several recordings and exports everything: audio, every transcript as text, combined Markdown, and metadata JSON. | Next | Dialog and metadata JSON built, untested. Selecting several recordings doesn't open it yet. |
 | US-27 | The user works from the keyboard: Space, Cmd+N, Cmd+Shift+N, Cmd+, , Cmd+E, and Cmd+K, with no menu bar icon. | 0.1 | Built, untested |
 | US-28 | The user deletes a recording after a confirmation, and its audio and transcripts go together. | 0.1 | Built, untested |
+| US-29 | The user writes meeting notes from a transcript with a local Ollama model, so private calls get notes without leaving the Mac. | 0.3 | Built, untested |
+| US-30 | The user writes meeting notes with Claude, after seeing that the transcript text (not audio) goes to Anthropic. | 0.3 | Built, untested |
+| US-31 | The user adds project files (for example a repository) as context for the notes, linked to a library folder. | Next | Planned (phase 2) |
 
 ## 6. Scope by release
 
@@ -113,7 +117,7 @@ Release key: **0.1** is built in the repo. **Next** is committed. **Later** is p
 - Record the microphone, with optional computer audio, to one 16 kHz mono AAC file. Pause and resume.
 - Import any audio file.
 - Call language per recording: Hindi + English or English only.
-- Engines: Local (whisper.cpp), Gemini, ElevenLabs Scribe, and Claude as a text-only reviewer.
+- Engines: Local (whisper.cpp), Gemini, ElevenLabs Scribe, and Claude as a text-only reviewer, with an API key or through Claude Code on the user's subscription.
 - One result per engine per recording, shown as tabs. "Get another opinion" runs more.
 - Cloud banner, readiness checks, and a confirmation on the detail screen.
 - Nested folders with nine colours. Move by menu or drag and drop.
@@ -190,7 +194,7 @@ Of its 181 SRS requirements, 15 are verified, 147 are built but untested, and 19
 
 ### 7.3 Opinions
 
-After the first transcript, "Get another opinion" runs another engine on the same audio (or Claude on the existing text). Each engine keeps one result, shown as a tab with the model name and time in its tooltip. Running an engine again replaces its tab.
+After the first transcript, "Get another opinion" runs another engine on the same audio (or Claude, or Claude through Claude Code, on the existing text). Each engine keeps one result, shown as a tab with the model name and time in its tooltip. Running an engine again replaces its tab.
 
 ### 7.4 Privacy and cloud disclosure
 
@@ -316,7 +320,7 @@ Oriserve ran at about 4 times real time on an M-series Mac with 16 GB: 2.5 minut
 | D-15 | Call `whisper-cli` as a program, supplied by Homebrew `whisper-cpp`. | Keeps whisper.cpp out of the build and lets Homebrew update it. | 16 Nov 2026 |
 | D-16 | Cloud model names are typed by the user. | The names change faster than the app, and the defaults are only starting values. | 16 Nov 2026 |
 | D-17 | Ship native SwiftUI first and apply the Graphite design system after. The design is now in the app (D-19). | Function came before polish. Every screen is on a Claude Design canvas. | 16 Nov 2026 |
-| D-18 | Notes are written in Claude, not in Scribe. | Scribe stays small, and the hand-off is one copy action. | 16 Nov 2026 |
+| D-18 | Notes are written in Claude, not in Scribe. Replaced by D-37. | Scribe stays small, and the hand-off is one copy action. | 16 Nov 2026 |
 | D-19 | The app follows the system light or dark setting in the Graphite design. | The decision came from the owner. The tokens already carry both themes, so there's no setting to keep. | 16 Nov 2026 |
 | D-20 | Global search across all transcripts, as a bar at the top centre of the window like a browser address field, focused with Cmd+K. | Decided by the owner on 16 and 17 Nov 2026. It replaces the proposed command palette. | 17 Nov 2026 |
 | D-21 | Show progress for long recordings: percent, elapsed, remaining, chunk x of y, and the upload stage. | Decided by the owner. A job can run for an hour or more, and a bare spinner says nothing about it. | 17 Nov 2026 |
@@ -334,6 +338,7 @@ Oriserve ran at about 4 times real time on an M-series Mac with 16 GB: 2.5 minut
 | D-33 | The Caret wave logo is the app icon and appears in the app. | Decided by the owner. It replaces the first bars-and-lines mark. | 17 Nov 2026 |
 | D-34 | Sign with a stable local certificate called Scribe Local Signing. | macOS ties the microphone and screen recording grants to the signing requirement, and an ad-hoc signature changes on every build. | 17 Nov 2026 |
 | D-35 | Claude is used for text review only, never for audio. | It can't take audio (D-04), and audio never goes to Anthropic. | 17 Nov 2026 |
+| D-37 | Scribe writes meeting notes from a transcript, with a local Ollama model (the default, nothing leaves the Mac) or Claude through Claude Code on the user's subscription, with no API key (transcript text only, confirmed each time). Notes are English, one set per recording, and regenerating replaces them. Project context, long-call splitting for local models, and Claude exploring code come in later phases. | Decided by the owner. Notes inside the app save a round trip and keep them with the call. It replaces D-18 and the notes non-goal. | 20 Nov 2026 |
 | D-36 | The PRD and SRS live in the repository `docs/` folder. | Decided by the owner. | 17 Nov 2026 |
 
 The reasons in D-03, D-07, D-09, D-10, D-15, D-16, and D-18 are recorded from the code and its comments, not from a separate written decision. Correct them here if the intent was different. For D-19 to D-33 and D-36, the owner made the decision and no separate reason was recorded, so the reason column states only what the code or the owner's notes support.

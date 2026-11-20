@@ -427,7 +427,7 @@ struct JobErrorPanel: View {
                 Button(action: onRetry) { IconLabel("Retry", "arrow.clockwise") }.buttonStyle(.g(.primary, height: 32))
                 switch jobKind {
                 case .keyRejected, .noKey:
-                    Button("Fix in AI Models") { ui.openSettings(.cloud(kind)) }.buttonStyle(.g(.secondary, height: 32))
+                    Button("Fix in AI Models") { ui.openSettings(kind == .claudeCode ? .models : .cloud(kind)) }.buttonStyle(.g(.secondary, height: 32))
                 case .whisperMissing:
                     Button("Open AI Models") { ui.openSettings(.local) }.buttonStyle(.g(.secondary, height: 32))
                 case .modelMissing:
@@ -437,7 +437,7 @@ struct JobErrorPanel: View {
                         .buttonStyle(.g(.secondary, height: 32))
                 case .failed:
                     if settings.issue(for: kind, language: recording.callLanguage) != nil {
-                        Button("AI Models") { ui.openSettings(kind == .local ? .local : .cloud(kind)) }.buttonStyle(.g(.secondary, height: 32))
+                        Button("AI Models") { ui.openSettings(kind == .local ? .local : (kind == .claudeCode ? .models : .cloud(kind))) }.buttonStyle(.g(.secondary, height: 32))
                     }
                 }
                 Button(jobKind == .failed ? "Keep the recording" : "Dismiss", action: onDismiss).buttonStyle(.g(.quiet, height: 32))
